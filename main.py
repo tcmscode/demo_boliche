@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Form, Depends, Response
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from database import engine, Base, get_db
 from models import Reserva
 from twilio.twiml.messaging_response import MessagingResponse
@@ -25,12 +26,57 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
     resp = MessagingResponse()
     msg = resp.message()
 
+    # --- 🔒 ZONA DE ADMINISTRADOR (Modo Dios) ---
+    # Tu número de admin
+    NUMERO_ADMIN = "whatsapp:+5491131850807" 
+
+    if sender == NUMERO_ADMIN and incoming_msg.startswith("admin"):
+        
+        # COMANDO 1: RESUMEN
+        if "stats" in incoming_msg:
+            total_reservas = db.query(func.count(Reserva.id)).scalar()
+            total_personas = db.query(func.sum(Reserva.cantidad)).scalar() or 0
+            msg.body(f"📊 *REPORTE EN VIVO*\n\nReservas: {total_reservas}\nPersonas Total: {total_personas}\n\nEl boliche se está llenando. 🚀")
+            return Response(content=str(resp), media_type="application/xml")
+
+        # COMANDO 2: RESET
+        elif "reset" in incoming_msg:
+            db.query(Reserva).delete()
+            db.commit()
+            msg.body("🗑️ *Base de Datos Limpia*\n\nSe borraron todas las reservas. Listo para una nueva demo.")
+            return Response(content=str(resp), media_type="application/xml")
+
+        # COMANDO 3: AYUDA ADMIN
+        else:
+            msg.body("🕵️ *MENÚ ADMIN*\n\n- Escribe 'admin stats': Ver números\n- Escribe 'admin reset': Borrar todo")
+            return Response(content=str(resp), media_type="application/xml")
+
+    # --- FIN ZONA ADMIN ---
+
     # --- MÁQUINA DE ESTADOS ---
     state = conversational_state.get(sender, 'start')
 
     if state == 'start':
-        msg.body("¡Hola! 👋 Bienvenido a *BOLICHE DEMO*.\n\n¿Qué te gustaría hacer hoy?\n1. Comprar Entradas Generales\n2. Reservar Mesa VIP\n\nResponde con el número de la opción.")
-        conversational_state[sender] = 'choosing_option'
+        # --- LÓGICA FOMO + FLYER ---
+        total_pax = db.query(func.sum(Reserva.cantidad)).scalar() or 0
+        cupo_maximo = 150 # Capacidad baja para simular
+        
+        # TU LINK DE IMAGEN ACTUALIZADO
+        url_flyer = "https://i.ibb.co/mFG17TST/Imagen-Bohemian-Demo.jpg" 
+
+        if total_pax >= cupo_maximo:
+             msg.body("⛔ *SOLD OUT* ⛔\n\nLo sentimos, ya alcanzamos la capacidad máxima. Intenta la próxima semana.")
+        
+        elif total_pax > (cupo_maximo - 20): # Si quedan menos de 20 lugares
+             msg.body(f"🔥 *¡ÚLTIMOS LUGARES!* 🔥\nQuedan solo {cupo_maximo - total_pax} cupos disponibles.\n\n¿Qué te gustaría hacer?\n1. Asegurar Entrada General\n2. Reservar Mesa VIP")
+             msg.media(url_flyer) # Envía el flyer
+             conversational_state[sender] = 'choosing_option'
+        
+        else:
+             # Flujo Normal con Flyer
+             msg.body("¡Hola! 👋 Bienvenido a *BOLICHE DEMO*.\n\nMira lo que se viene este finde 👇\n\n¿Qué te gustaría hacer hoy?\n1. Comprar Entradas Generales\n2. Reservar Mesa VIP\n\nResponde con el número de la opción.")
+             msg.media(url_flyer) # Envía el flyer
+             conversational_state[sender] = 'choosing_option'
 
     elif state == 'choosing_option':
         if incoming_msg == '1':
@@ -66,10 +112,16 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
             db.add(nueva_reserva)
             db.commit()
             
+            # --- GENERACIÓN DE QR ---
+            datos_qr = f"ID:{nueva_reserva.id}|{nueva_reserva.nombre_completo}|Pax:{cantidad}|Tipo:{nueva_reserva.tipo_entrada}"
+            url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={datos_qr}"
+            
             conversational_state[sender] = 'start'
             temp_data[sender] = {}
 
-            msg.body(f"✅ *¡Reserva Confirmada!*\n\nTitular: {nueva_reserva.nombre_completo}\nTipo: {nueva_reserva.tipo_entrada}\nPersonas: {cantidad}\n\nTe esperamos. Mostrá este mensaje en la puerta.")
+            # Respuesta con QR
+            msg.body(f"✅ *¡Reserva Confirmada!*\n\nTitular: {nueva_reserva.nombre_completo}\nTipo: {nueva_reserva.tipo_entrada}\nPersonas: {cantidad}\n\n⚠️ *Mostrá el código QR de abajo en la puerta para entrar.*")
+            msg.media(url_qr)
         else:
             msg.body("Por favor, ingresa solo números.")
 
@@ -102,7 +154,8 @@ def ver_panel(db: Session = Depends(get_db)):
     <html>
         <head>
             <title>Panel de Reservas</title>
-            <meta http-equiv="refresh" content="10"> <style>
+            <meta http-equiv="refresh" content="10"> 
+            <style>
                 body {{ font-family: 'Segoe UI', sans-serif; margin: 0; padding: 40px; background: #f5f5f5; }}
                 .container {{ max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
                 h1 {{ color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 20px; }}
