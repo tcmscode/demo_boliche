@@ -5,6 +5,7 @@ from sqlalchemy import func
 from database import engine, Base, get_db
 from models import Reserva
 from twilio.twiml.messaging_response import MessagingResponse
+import urllib.parse  # <--- NUEVO: Para arreglar los espacios en los nombres
 
 # Crear las tablas en la base de datos al iniciar
 Base.metadata.create_all(bind=engine)
@@ -59,23 +60,23 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
     if state == 'start':
         # --- LÓGICA FOMO + FLYER ---
         total_pax = db.query(func.sum(Reserva.cantidad)).scalar() or 0
-        cupo_maximo = 150 # Capacidad baja para simular
+        cupo_maximo = 150 
         
-        # TU LINK DE IMAGEN ACTUALIZADO
+        # Tu Flyer
         url_flyer = "https://i.ibb.co/mFG17TST/Imagen-Bohemian-Demo.jpg" 
 
         if total_pax >= cupo_maximo:
              msg.body("⛔ *SOLD OUT* ⛔\n\nLo sentimos, ya alcanzamos la capacidad máxima. Intenta la próxima semana.")
         
-        elif total_pax > (cupo_maximo - 20): # Si quedan menos de 20 lugares
+        elif total_pax > (cupo_maximo - 20): 
              msg.body(f"🔥 *¡ÚLTIMOS LUGARES!* 🔥\nQuedan solo {cupo_maximo - total_pax} cupos disponibles.\n\n¿Qué te gustaría hacer?\n1. Asegurar Entrada General\n2. Reservar Mesa VIP")
-             msg.media(url_flyer) # Envía el flyer
+             msg.media(url_flyer) 
              conversational_state[sender] = 'choosing_option'
         
         else:
-             # Flujo Normal con Flyer
+             # Flujo Normal
              msg.body("¡Hola! 👋 Bienvenido a *BOLICHE DEMO*.\n\nMira lo que se viene este finde 👇\n\n¿Qué te gustaría hacer hoy?\n1. Comprar Entradas Generales\n2. Reservar Mesa VIP\n\nResponde con el número de la opción.")
-             msg.media(url_flyer) # Envía el flyer
+             msg.media(url_flyer) 
              conversational_state[sender] = 'choosing_option'
 
     elif state == 'choosing_option':
@@ -112,9 +113,13 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
             db.add(nueva_reserva)
             db.commit()
             
-            # --- GENERACIÓN DE QR ---
-            datos_qr = f"ID:{nueva_reserva.id}|{nueva_reserva.nombre_completo}|Pax:{cantidad}|Tipo:{nueva_reserva.tipo_entrada}"
-            url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={datos_qr}"
+            # --- GENERACIÓN DE QR (CORREGIDA) ---
+            datos_brutos = f"ID:{nueva_reserva.id}|{nueva_reserva.nombre_completo}|Pax:{cantidad}|Tipo:{nueva_reserva.tipo_entrada}"
+            
+            # Aquí está la magia: convertimos espacios en %20 para no romper el link
+            datos_safe = urllib.parse.quote(datos_brutos)
+            
+            url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={datos_safe}"
             
             conversational_state[sender] = 'start'
             temp_data[sender] = {}
