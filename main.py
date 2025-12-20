@@ -5,9 +5,9 @@ from sqlalchemy import func
 from database import engine, Base, get_db
 from models import Reserva
 from twilio.twiml.messaging_response import MessagingResponse
-import urllib.parse  # <--- NUEVO: Para arreglar los espacios en los nombres
+import urllib.parse 
 
-# Crear las tablas en la base de datos al iniciar
+# Crear las tablas
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
@@ -18,41 +18,28 @@ temp_data = {}
 
 @app.post("/webhook")
 async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Session = Depends(get_db)):
-    """
-    Webhook que recibe mensajes de Twilio y responde en XML.
-    """
+    
     sender = From
     incoming_msg = Body.strip().lower()
     
     resp = MessagingResponse()
     msg = resp.message()
 
-    # --- 🔒 ZONA DE ADMINISTRADOR (Modo Dios) ---
-    # Tu número de admin
+    # --- 🔒 ZONA ADMIN ---
     NUMERO_ADMIN = "whatsapp:+5491131850807" 
 
     if sender == NUMERO_ADMIN and incoming_msg.startswith("admin"):
-        
-        # COMANDO 1: RESUMEN
         if "stats" in incoming_msg:
             total_reservas = db.query(func.count(Reserva.id)).scalar()
             total_personas = db.query(func.sum(Reserva.cantidad)).scalar() or 0
-            msg.body(f"📊 *REPORTE EN VIVO*\n\nReservas: {total_reservas}\nPersonas Total: {total_personas}\n\nEl boliche se está llenando. 🚀")
+            msg.body(f"📊 *REPORTE EN VIVO*\n\nTickets/Mesas: {total_reservas}\nPersonas Total: {total_personas}")
             return Response(content=str(resp), media_type="application/xml")
-
-        # COMANDO 2: RESET
         elif "reset" in incoming_msg:
             db.query(Reserva).delete()
             db.commit()
-            msg.body("🗑️ *Base de Datos Limpia*\n\nSe borraron todas las reservas. Listo para una nueva demo.")
+            msg.body("🗑️ Base de datos borrada.")
             return Response(content=str(resp), media_type="application/xml")
-
-        # COMANDO 3: AYUDA ADMIN
-        else:
-            msg.body("🕵️ *MENÚ ADMIN*\n\n- Escribe 'admin stats': Ver números\n- Escribe 'admin reset': Borrar todo")
-            return Response(content=str(resp), media_type="application/xml")
-
-    # --- FIN ZONA ADMIN ---
+    # --- FIN ADMIN ---
 
     # --- MÁQUINA DE ESTADOS ---
     state = conversational_state.get(sender, 'start')
@@ -61,93 +48,145 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
         # --- LÓGICA FOMO + FLYER ---
         total_pax = db.query(func.sum(Reserva.cantidad)).scalar() or 0
         cupo_maximo = 150 
-        
-        # Tu Flyer
         url_flyer = "https://i.ibb.co/mFG17TST/Imagen-Bohemian-Demo.jpg" 
 
         if total_pax >= cupo_maximo:
-             msg.body("⛔ *SOLD OUT* ⛔\n\nLo sentimos, ya alcanzamos la capacidad máxima. Intenta la próxima semana.")
+             # TEXTO 1: SOLD OUT
+             msg.body("⛔ *SOLD OUT* ⛔\n\nCapacidad máxima alcanzada.\n\nGracias por tu interés.")
         
         elif total_pax > (cupo_maximo - 20): 
-             msg.body(f"🔥 *¡ÚLTIMOS LUGARES!* 🔥\nQuedan solo {cupo_maximo - total_pax} cupos disponibles.\n\n¿Qué te gustaría hacer?\n1. Asegurar Entrada General\n2. Reservar Mesa VIP")
-             msg.media(url_flyer) 
+             # TEXTO 2: ÚLTIMOS LUGARES
+             msg.body(f"🔥 *¡Últimos lugares en MOSCU!* 🔥\n\nQuedan {cupo_maximo - total_pax} cupos.\nElegí una opción:\n\n1. 🎫 Entrada General (con QR)\n2. 🍾 Mesa VIP (Lista Exclusiva)")
+             msg.media(url_flyer)
              conversational_state[sender] = 'choosing_option'
-        
         else:
-             # Flujo Normal
-             msg.body("¡Hola! 👋 Bienvenido a *BOLICHE DEMO*.\n\nMira lo que se viene este finde 👇\n\n¿Qué te gustaría hacer hoy?\n1. Comprar Entradas Generales\n2. Reservar Mesa VIP\n\nResponde con el número de la opción.")
+             # TEXTO 3: SALUDO NORMAL
+             msg.body("¡Hola! Bienvenid@ a *MOSCU*.\n\n¿Qué querés hacer hoy?\n\n1. 🎫 Entrada General (con QR)\n2. 🍾 Mesa VIP (Lista Exclusiva)")
              msg.media(url_flyer) 
              conversational_state[sender] = 'choosing_option'
 
     elif state == 'choosing_option':
         if incoming_msg == '1':
-            temp_data[sender] = {'tipo': 'General'}
-            msg.body("Excelente, Entrada General. 🎟️\n¿A nombre de quién las anoto? (Nombre y Apellido)")
-            conversational_state[sender] = 'asking_name'
+            # OPCIÓN GENERAL
+            temp_data[sender] = {'tipo': 'General', 'nombres_invitados': []}
+            # TEXTO 4: PEDIR CANTIDAD
+            msg.body("🎫 *Entrada General*\n\n¿Cuántas entradas necesitás?\n\nEnviá solo el número.")
+            conversational_state[sender] = 'general_cantidad'
+            
         elif incoming_msg == '2':
+            # OPCIÓN VIP
             temp_data[sender] = {'tipo': 'Mesa VIP'}
-            msg.body("Buena elección, Mesa VIP. 🍾\n¿A nombre de quién hago la reserva?")
-            conversational_state[sender] = 'asking_name'
+            # TEXTO 10: PEDIR TITULAR VIP
+            msg.body("🍾 *Mesa VIP*\n\nBuenísimo. ¿A nombre de quién reservamos la mesa?")
+            conversational_state[sender] = 'vip_nombre'
         else:
-            msg.body("Por favor, responde '1' o '2'.")
+            msg.body("Por favor, respondé con '1' o '2'.")
 
-    elif state == 'asking_name':
-        if sender not in temp_data: temp_data[sender] = {}
-        temp_data[sender]['nombre'] = Body
-        msg.body(f"Genial {Body}. ¿Cuántas personas son? (Ingresa solo el número)")
-        conversational_state[sender] = 'asking_quantity'
-
-    elif state == 'asking_quantity':
+    # --- CAMINO GENERAL (Pide nombres 1 por 1) ---
+    elif state == 'general_cantidad':
         if incoming_msg.isdigit():
             cantidad = int(incoming_msg)
-            data = temp_data.get(sender, {})
+            if cantidad > 10:
+                # TEXTO 5: ERROR MUCHOS
+                msg.body("El máximo por compra es 10 entradas.\n\nEnviá una cantidad menor.")
+            elif cantidad > 0:
+                temp_data[sender]['total_esperado'] = cantidad
+                # TEXTO 6: CONFIRMAR Y PEDIR NOMBRE 1
+                msg.body(f"Perfecto: {cantidad} personas.\n\nEscribí el *Nombre y Apellido* de la persona nº 1:")
+                conversational_state[sender] = 'general_pidiendo_nombres'
+            else:
+                msg.body("Ingresa un número válido mayor a 0.")
+        else:
+            msg.body("Por favor ingresa solo números.")
+
+    elif state == 'general_pidiendo_nombres':
+        data = temp_data.get(sender)
+        nombres = data['nombres_invitados']
+        nombres.append(Body.strip().title()) 
+        
+        total_necesarios = data['total_esperado']
+        
+        if len(nombres) < total_necesarios:
+            # TEXTO 7: PEDIR SIGUIENTE NOMBRE
+            msg.body(f"Listo.\n\nAhora escribí el *Nombre y Apellido* de la persona nº {len(nombres) + 1}:")
+        else:
+            # TEXTO 8: ESPERA GENERACIÓN
+            msg.body("⏳ Procesando tus entradas…\n\nTe van a llegar los QRs uno por uno.")
             
-            # Guardar en DB
+            for nombre_invitado in nombres:
+                # Guardar en DB
+                nueva_reserva = Reserva(
+                    whatsapp_id=sender,
+                    nombre_completo=nombre_invitado,
+                    tipo_entrada="General",
+                    cantidad=1,
+                    confirmada=True
+                )
+                db.add(nueva_reserva)
+                db.commit()
+                
+                # Generar QR
+                datos_safe = urllib.parse.quote(f"ID:{nueva_reserva.id}|{nombre_invitado}|ACCESO:GENERAL")
+                url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={datos_safe}"
+                
+                # TEXTO 9: ENTREGA TICKET
+                mensaje_individual = resp.message(f"✅ Entrada para: *{nombre_invitado}*\nID: {nueva_reserva.id}")
+                mensaje_individual.media(url_qr)
+            
+            conversational_state[sender] = 'start'
+            temp_data[sender] = {}
+            
+            return Response(content=str(resp), media_type="application/xml")
+
+    # --- CAMINO VIP (Lista sin QR) ---
+    elif state == 'vip_nombre':
+        temp_data[sender]['nombre'] = Body
+        # TEXTO 11: PEDIR TAMAÑO MESA
+        msg.body(f"Bienvenido {Body}.\n\n¿Para cuántas personas es la mesa aprox?\n\n(Solo para organizarnos)")
+        conversational_state[sender] = 'vip_cantidad'
+
+    elif state == 'vip_cantidad':
+        if incoming_msg.isdigit():
+            cantidad = int(incoming_msg)
+            data = temp_data.get(sender)
+            
             nueva_reserva = Reserva(
                 whatsapp_id=sender,
-                nombre_completo=data.get('nombre', 'Desconocido'),
-                tipo_entrada=data.get('tipo', 'General'),
+                nombre_completo=data.get('nombre') + " (MESA VIP)",
+                tipo_entrada="Mesa VIP",
                 cantidad=cantidad,
                 confirmada=True
             )
             db.add(nueva_reserva)
             db.commit()
             
-            # --- GENERACIÓN DE QR (CORREGIDA) ---
-            datos_brutos = f"ID:{nueva_reserva.id}|{nueva_reserva.nombre_completo}|Pax:{cantidad}|Tipo:{nueva_reserva.tipo_entrada}"
-            
-            # Aquí está la magia: convertimos espacios en %20 para no romper el link
-            datos_safe = urllib.parse.quote(datos_brutos)
-            
-            url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={datos_safe}"
-            
             conversational_state[sender] = 'start'
             temp_data[sender] = {}
 
-            # Respuesta con QR
-            msg.body(f"✅ *¡Reserva Confirmada!*\n\nTitular: {nueva_reserva.nombre_completo}\nTipo: {nueva_reserva.tipo_entrada}\nPersonas: {cantidad}\n\n⚠️ *Mostrá el código QR de abajo en la puerta para entrar.*")
-            msg.media(url_qr)
+            # TEXTO 12: CONFIRMACIÓN VIP
+            msg.body(f"🥂 *MESA CONFIRMADA*\nTitular: {nueva_reserva.nombre_completo}\nPersonas: {cantidad}\n✅ Ya estás en la Lista Exclusiva.\n\nAl llegar, avisá en puerta VIP tu nombre y te indican el ingreso.")
         else:
-            msg.body("Por favor, ingresa solo números.")
+            msg.body("Ingresa solo números.")
 
-    # RESPUESTA XML OBLIGATORIA
     return Response(content=str(resp), media_type="application/xml")
 
-# --- PANEL DE CONTROL VISUAL ---
+# --- PANEL DE CONTROL ---
 @app.get("/panel", response_class=HTMLResponse)
 def ver_panel(db: Session = Depends(get_db)):
-    reservas = db.query(Reserva).all()
+    reservas = db.query(Reserva).order_by(Reserva.id.desc()).all()
     
     filas = ""
     for r in reservas:
+        color = '#e3f2fd' if r.tipo_entrada == 'General' else '#fff3e0'
+        estilo_borde = 'border-left: 5px solid gold;' if r.tipo_entrada == 'Mesa VIP' else ''
+        
         filas += f"""
-        <tr>
+        <tr style="{estilo_borde}">
             <td style="padding: 10px; border-bottom: 1px solid #ddd;">{r.id}</td>
-            <td style="padding: 10px; border-bottom: 1px solid #ddd;">{r.fecha_reserva.strftime('%d/%m %H:%M')}</td>
-            <td style="padding: 10px; border-bottom: 1px solid #ddd;">{r.whatsapp_id}</td>
+            <td style="padding: 10px; border-bottom: 1px solid #ddd;">{r.fecha_reserva.strftime('%H:%M')}</td>
             <td style="padding: 10px; border-bottom: 1px solid #ddd;"><b>{r.nombre_completo}</b></td>
             <td style="padding: 10px; border-bottom: 1px solid #ddd;">
-                <span style="background: {'#e3f2fd' if r.tipo_entrada == 'General' else '#fff3e0'}; padding: 5px 10px; border-radius: 15px; font-size: 0.9em;">
+                <span style="background: {color}; padding: 5px 10px; border-radius: 15px; font-size: 0.9em; font-weight:bold;">
                     {r.tipo_entrada}
                 </span>
             </td>
@@ -158,10 +197,10 @@ def ver_panel(db: Session = Depends(get_db)):
     html = f"""
     <html>
         <head>
-            <title>Panel de Reservas</title>
-            <meta http-equiv="refresh" content="10"> 
+            <title>Panel MOSCU</title>
+            <meta http-equiv="refresh" content="5"> 
             <style>
-                body {{ font-family: 'Segoe UI', sans-serif; margin: 0; padding: 40px; background: #f5f5f5; }}
+                body {{ font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }}
                 .container {{ max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
                 h1 {{ color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 20px; }}
                 table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
@@ -170,15 +209,14 @@ def ver_panel(db: Session = Depends(get_db)):
         </head>
         <body>
             <div class="container">
-                <h1>📋 Reservas Confirmadas - Boliche Demo</h1>
+                <h1>📋 Access Control - MOSCU</h1>
                 <table>
                     <thead>
                         <tr>
-                            <th>#</th>
-                            <th>Fecha</th>
-                            <th>WhatsApp</th>
-                            <th>Cliente</th>
-                            <th>Tipo</th>
+                            <th>ID</th>
+                            <th>Hora</th>
+                            <th>Nombre / Titular</th>
+                            <th>Acceso</th>
                             <th>Pax</th>
                         </tr>
                     </thead>
