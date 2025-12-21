@@ -20,7 +20,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 class Reserva(Base):
-    __tablename__ = "reservas_v10_final" # Tabla nueva V10
+    __tablename__ = "reservas_v12_night" # Tabla final V12
     
     id = Column(Integer, primary_key=True, index=True)
     whatsapp_id = Column(String, index=True)
@@ -51,10 +51,8 @@ DIRECTORIO_RRPP = {
 
 ADMIN_PASSWORD = "Moscu123"
 CUPO_TOTAL = 150
-# FLYER RESTAURADO
 URL_FLYER = "https://i.ibb.co/mFG17TST/Imagen-Bohemian-Demo.jpg"
 
-# Memoria
 conversational_state = {}
 temp_data = {}
 user_attribution = {} 
@@ -75,46 +73,39 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
         resp = MessagingResponse()
         msg = resp.message()
 
-        # --- A. NAVEGACIÓN INTELIGENTE (EL CAMBIO CLAVE) ---
+        # --- NAVEGACIÓN Y SEGURIDAD ---
         palabras_escape = ["menu", "cancelar", "inicio", "basta"]
-        palabras_salida = ["salir", "exit"] # Estas SI sacan del admin
+        palabras_salida = ["salir", "exit"]
         
         current_state = conversational_state.get(sender, 'start')
 
-        # 1. Si quiere SALIR DEL TODO (Cierra sesión admin)
         if msg_lower in palabras_salida:
             conversational_state[sender] = 'start'
             temp_data[sender] = {}
-            msg.body("🔒 *Sesión Cerrada* / Reinicio.")
-            # Forzamos caída al flow de cliente abajo
+            msg.body("🔒 *Sesión Cerrada*")
             state = 'start'
 
-        # 2. Si quiere volver al MENÚ
         elif msg_lower in palabras_escape:
-            # Si ya es Admin, vuelve al menú Admin (no al del cliente)
             if current_state.startswith('admin_'):
                 conversational_state[sender] = 'admin_menu'
                 msg.body("🔙 *Menú Admin*\n\n1. 📊 Dashboard\n2. 📢 Difusión\n3. 🎫 Alta Manual\n4. 🚪 Salir")
                 return Response(content=str(resp), media_type="application/xml")
             else:
-                # Si es cliente, vuelve al inicio
                 conversational_state[sender] = 'start'
                 temp_data[sender] = {}
-                state = 'start' # Sigue abajo
+                state = 'start'
         
-        # 3. Reset DB (Solo Admin o Clave Maestra)
         elif msg_lower == "admin reset db":
             db.query(Reserva).delete()
             db.commit()
             conversational_state = {}
-            msg.body("🗑️ *Base de Datos V10 Limpia*")
+            msg.body("🗑️ *Base de Datos V12 Limpia*")
             return Response(content=str(resp), media_type="application/xml")
         
         else:
             state = conversational_state.get(sender, 'start')
 
-
-        # --- B. DETECCIÓN RRPP ---
+        # --- RRPP DETECTION ---
         rrpp_detectado = "Organico"
         if "vengo de" in msg_lower:
             try:
@@ -128,10 +119,7 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
             except: pass
         if sender in user_attribution: rrpp_detectado = user_attribution[sender]
 
-
-        # --- C. MÁQUINA DE ESTADOS ---
-
-        # >>> ZONA ADMIN <<<
+        # --- ADMIN FLOW ---
         if msg_lower == "/admin":
             conversational_state[sender] = 'admin_auth'
             msg.body("🔐 *BOLICHE OS*\nContraseña:")
@@ -148,48 +136,72 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
 
         if state == 'admin_menu':
             if msg_lower == '1': 
-                total = db.query(func.count(Reserva.id)).scalar()
-                msg.body(f"📊 *Dashboard*\nTickets: {total}\n(Escribí 'menu' para volver)")
+                # Cálculo de PAX REALES (Suma de cantidades)
+                total_pax = db.query(func.sum(Reserva.cantidad)).scalar() or 0
+                msg.body(f"📊 *Dashboard Real*\n\n👥 Pax Totales: {total_pax}/{CUPO_TOTAL}\n(Escribí 'menu' para volver)")
             elif msg_lower == '2': 
                 conversational_state[sender] = 'admin_broadcast'
                 msg.body("📢 Escribí el mensaje de difusión:")
             elif msg_lower == '3': 
-                conversational_state[sender] = 'admin_manual'
-                msg.body("🎫 *Alta Manual*\nFormato: Nombre, Cantidad")
+                conversational_state[sender] = 'admin_manual_select'
+                msg.body("🎫 *Seleccioná Tipo:*\n\n1. 🎟️ General (QR)\n2. 🥂 Mesa VIP (Lista)")
             elif msg_lower == '4': 
                 conversational_state[sender] = 'start'
                 msg.body("🔒 Saliste.")
             elif msg_lower == '0' or msg_lower == 'menu':
                 msg.body("🔙 *Menú Admin*\n1. Dashboard\n2. Difusión\n3. Alta Manual\n4. Salir")
             else:
-                msg.body("Opción inválida (1-4).")
+                msg.body("Opción inválida.")
             return Response(content=str(resp), media_type="application/xml")
 
-        if state == 'admin_broadcast':
-            count = db.query(Reserva.id).count()
-            msg.body(f"🚀 Enviado a {count} pax.\n(Simulacro)")
-            conversational_state[sender] = 'admin_menu'
-            # Auto-retorno al menú visual
-            resp.message("🔙 *Menú Admin*\n1. Dashboard\n2. Difusión\n3. Alta Manual\n4. Salir")
+        if state == 'admin_manual_select':
+            if msg_lower == '1':
+                conversational_state[sender] = 'admin_manual_general'
+                msg.body("🎟️ *Alta General*\nEscribí: Nombre, Cantidad")
+            elif msg_lower == '2':
+                conversational_state[sender] = 'admin_manual_vip'
+                msg.body("🥂 *Alta Mesa VIP*\nEscribí: Nombre, Cantidad")
+            else:
+                msg.body("1 o 2.")
             return Response(content=str(resp), media_type="application/xml")
 
-        if state == 'admin_manual':
-            if "," not in incoming_msg:
-                msg.body("⚠️ Falta coma. Ej: Messi, 10")
+        if state == 'admin_manual_general':
+            if "," not in incoming_msg: msg.body("⚠️ Falta coma. Ej: Juan, 2")
             else:
                 try:
                     d = incoming_msg.split(',')
                     nom = d[0].strip().title()
                     cant = int(d[1].strip())
-                    new_res = Reserva(whatsapp_id=sender, nombre_completo=nom+" (VIP)", tipo_entrada="Mesa VIP", cantidad=cant, confirmada=True, rrpp_asignado="Admin")
+                    new_res = Reserva(whatsapp_id=sender, nombre_completo=nom+" (MANUAL)", tipo_entrada="General", cantidad=cant, confirmada=True, rrpp_asignado="Admin")
                     db.add(new_res)
                     db.commit()
                     url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=https://bot-boliche-demo.onrender.com/check/{new_res.id}"
-                    msg.body(f"✅ *Alta Exitosa*\nCliente: {nom}")
+                    msg.body(f"✅ *Alta General*\n{nom} ({cant} pax)")
                     msg.media(url_qr)
-                    resp.message("¿Otro? Escribí 'Nombre, Cantidad' o 'MENU' para volver.")
-                except:
-                    msg.body("⚠️ Error en datos.")
+                    resp.message("¿Otro? 'Nombre, Cantidad' o 'MENU'.")
+                except: msg.body("⚠️ Error datos.")
+            return Response(content=str(resp), media_type="application/xml")
+
+        if state == 'admin_manual_vip':
+            if "," not in incoming_msg: msg.body("⚠️ Falta coma. Ej: Messi, 10")
+            else:
+                try:
+                    d = incoming_msg.split(',')
+                    nom = d[0].strip().title()
+                    cant = int(d[1].strip())
+                    new_res = Reserva(whatsapp_id=sender, nombre_completo=nom+" (MANUAL VIP)", tipo_entrada="Mesa VIP", cantidad=cant, confirmada=True, rrpp_asignado="Admin")
+                    db.add(new_res)
+                    db.commit()
+                    msg.body(f"✅ *Mesa Cargada*\n{nom} ({cant} pax)\n_Sin QR (Lista)_")
+                    resp.message("¿Otra? 'Nombre, Cantidad' o 'MENU'.")
+                except: msg.body("⚠️ Error datos.")
+            return Response(content=str(resp), media_type="application/xml")
+
+        if state == 'admin_broadcast':
+            count = db.query(Reserva.id).count()
+            msg.body(f"🚀 Enviado a {count} pax (Simulado).")
+            conversational_state[sender] = 'admin_menu'
+            resp.message("🔙 *Menú Admin*")
             return Response(content=str(resp), media_type="application/xml")
 
         # >>> ZONA CLIENTE <<<
@@ -204,12 +216,10 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
             else:
                 aviso = ""
                 if total_pax > (CUPO_TOTAL - 20): aviso = "🔥 *¡ÚLTIMOS LUGARES!* 🔥\n"
-                
                 saludo = f"{aviso}¡Hola! Bienvenid@ a *MOSCU*.\n"
                 if sender in temp_data and 'rrpp_origen' in temp_data[sender]:
                     rrpp_name = DIRECTORIO_RRPP[temp_data[sender]['rrpp_origen']]['nombre']
                     saludo = f"👋 ¡Te envía *{rrpp_name}*!\n{aviso}"
-
                 msg.body(f"{saludo}\n1. 🎫 Entrada General\n2. 🍾 Mesa VIP\n3. 🙋 Ayuda / RRPP")
                 msg.media(URL_FLYER)
                 conversational_state[sender] = 'choosing'
@@ -229,8 +239,7 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
                 cel = DIRECTORIO_RRPP.get(rrpp, DIRECTORIO_RRPP['general'])['celular']
                 msg.body(f"📞 RRPP: https://wa.me/{cel}")
                 conversational_state[sender] = 'start'
-            else:
-                msg.body("Opción inválida (1, 2 o 3).")
+            else: msg.body("1, 2 o 3.")
             return Response(content=str(resp), media_type="application/xml")
 
         if state == 'cant_gen':
@@ -287,19 +296,130 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
         print(f"ERROR: {traceback.format_exc()}")
         conversational_state[sender] = 'start'
         resp = MessagingResponse()
-        resp.message("⚠️ Error interno. Escribí 'Hola' para reiniciar.")
+        resp.message("⚠️ Error interno. Escribí 'Hola'.")
         return Response(content=str(resp), media_type="application/xml")
 
-# --- 4. WEB ---
+# --- 4. PANEL WEB (NIGHT MODE) ---
 @app.get("/check/{ticket_id}", response_class=HTMLResponse)
 def validar_ticket(ticket_id: int, db: Session = Depends(get_db)):
     reserva = db.query(Reserva).filter(Reserva.id == ticket_id).first()
-    if not reserva: return "<h1 style='color:red;text-align:center'>❌ INVALIDO</h1>"
-    return f"<div style='background:green;color:white;text-align:center;padding:50px'><h1>✅ VALIDO</h1><h2>{reserva.nombre_completo}</h2></div>"
+    if not reserva:
+        return """
+        <body style='background:black;color:white;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;flex-direction:column'>
+            <div style='font-size:100px'>❌</div>
+            <h1 style='color:red;font-size:3em;margin:0'>INVALIDO</h1>
+        </body>
+        """
+    return f"""
+    <body style='background:black;color:white;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;flex-direction:column'>
+        <div style='font-size:100px'>✅</div>
+        <h1 style='color:#0f0;font-size:3em;margin:0'>PERMITIDO</h1>
+        <h2 style='font-size:2em;margin:20px 0'>{reserva.nombre_completo}</h2>
+        <div style='background:#333;padding:10px 30px;border-radius:20px;font-size:1.5em'>{reserva.tipo_entrada}</div>
+    </body>
+    """
 
 @app.get("/panel", response_class=HTMLResponse)
 def ver_panel(db: Session = Depends(get_db)):
     reservas = db.query(Reserva).order_by(Reserva.id.desc()).all()
+    
+    # Cálculos reales de PAX (Suma de cantidades, no de filas)
+    total_pax = db.query(func.sum(Reserva.cantidad)).scalar() or 0
+    total_vip = db.query(func.sum(Reserva.cantidad)).filter(Reserva.tipo_entrada == 'Mesa VIP').scalar() or 0
+    total_gral = db.query(func.sum(Reserva.cantidad)).filter(Reserva.tipo_entrada == 'General').scalar() or 0
+    
     filas = ""
-    for r in reservas: filas += f"<tr><td>{r.id}</td><td>{r.fecha_reserva.strftime('%H:%M')}</td><td>{r.nombre_completo}</td><td>{r.tipo_entrada}</td><td>{r.cantidad}</td><td>{r.rrpp_asignado}</td></tr>"
-    return f"<html><body><h1>Panel V10</h1><table border=1>{filas}</table></body></html>"
+    for r in reservas:
+        color_tipo = '#d946ef' if r.tipo_entrada == 'Mesa VIP' else '#22d3ee' # Pink vs Cyan
+        filas += f"""
+        <tr style='border-bottom:1px solid #333'>
+            <td style='padding:15px'>#{r.id}</td>
+            <td>{r.fecha_reserva.strftime('%H:%M')}</td>
+            <td style='font-weight:bold'>{r.nombre_completo}</td>
+            <td><span style='color:{color_tipo};border:1px solid {color_tipo};padding:2px 8px;border-radius:5px'>{r.tipo_entrada}</span></td>
+            <td style='text-align:center;font-size:1.2em'>{r.cantidad}</td>
+            <td style='color:#a3a3a3'>{r.rrpp_asignado}</td>
+        </tr>"""
+    
+    return f"""
+    <html>
+    <head>
+        <title>MOSCU Night Manager</title>
+        <meta http-equiv="refresh" content="30">
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script>
+            function exportCSV() {{
+                var csv = [];
+                var rows = document.querySelectorAll("table tr");
+                for (var i = 0; i < rows.length; i++) {{
+                    var row = [], cols = rows[i].querySelectorAll("td, th");
+                    for (var j = 0; j < cols.length; j++) {{
+                        var data = cols[j].innerText.replace(/(\\r\\n|\\n|\\r)/gm, "").replace(/"/g, '""');
+                        row.push('"' + data + '"');
+                    }}
+                    csv.push(row.join(","));        
+                }}
+                var now = new Date();
+                var dateStr = now.toISOString().slice(0,10);
+                var blob = new Blob(["\\uFEFF" + csv.join("\\n")], {{ type: 'text/csv; charset=utf-8;' }});
+                var link = document.createElement("a");
+                link.href = URL.createObjectURL(blob);
+                link.download = "Moscu_Guestlist_" + dateStr + ".csv";
+                link.click();
+            }}
+        </script>
+        <style>
+            body {{ background-color: #000; color: #fff; font-family: 'Inter', sans-serif; margin: 0; padding: 40px; }}
+            .container {{ max-width: 1200px; margin: 0 auto; }}
+            .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; border-bottom: 2px solid #333; padding-bottom: 20px; }}
+            h1 {{ margin: 0; font-size: 2.5em; letter-spacing: -1px; background: -webkit-linear-gradient(45deg, #d946ef, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
+            .btn-export {{ background: #22c55e; color: black; padding: 12px 24px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; transition: transform 0.2s; }}
+            .btn-export:hover {{ transform: scale(1.05); background: #4ade80; }}
+            
+            .stats-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 40px; }}
+            .card {{ background: #111; border: 1px solid #333; padding: 20px; border-radius: 12px; text-align: center; }}
+            .card h3 {{ margin: 0 0 10px 0; color: #888; font-size: 0.9em; text-transform: uppercase; }}
+            .card .number {{ font-size: 3em; font-weight: bold; margin: 0; }}
+            
+            table {{ width: 100%; border-collapse: collapse; font-size: 0.95em; }}
+            th {{ text-align: left; padding: 15px; color: #888; border-bottom: 2px solid #333; text-transform: uppercase; font-size: 0.8em; }}
+            tr:hover {{ background: #111; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🦁 MOSCU NIGHT MANAGER</h1>
+                <button class="btn-export" onclick="exportCSV()">⬇️ EXCEL DOWNLOAD</button>
+            </div>
+            
+            <div class="stats-grid">
+                <div class="card">
+                    <h3>Total Pax</h3>
+                    <p class="number" style="color: white">{total_pax}</p>
+                </div>
+                <div class="card" style="border-color: #d946ef33">
+                    <h3>Mesa VIP Pax</h3>
+                    <p class="number" style="color: #d946ef">{total_vip}</p>
+                </div>
+                <div class="card" style="border-color: #22d3ee33">
+                    <h3>General Pax</h3>
+                    <p class="number" style="color: #22d3ee">{total_gral}</p>
+                </div>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th><th>Hora</th><th>Nombre Completo</th><th>Acceso</th><th>Pax</th><th>RRPP</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {filas}
+                </tbody>
+            </table>
+        </div>
+    </body>
+    </html>
+    """
