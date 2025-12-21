@@ -8,6 +8,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 import urllib.parse 
 import datetime
 import os
+import sys # Para logs
 
 # --- CONFIGURACIÓN DATABASE ---
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://usuario:password@localhost/dbname")
@@ -62,8 +63,11 @@ CUPO_TOTAL = 150
 async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Session = Depends(get_db)):
     
     sender = From
-    incoming_msg = Body.strip() # Respetamos mayúsculas/minúsculas para passwords, pero limpiamos espacios
+    incoming_msg = Body.strip()
     msg_lower = incoming_msg.lower()
+    
+    # LOG DE DEBUG (Miralo en Render Dashboard > Logs)
+    print(f"DEBUG: Msg de {sender}: '{incoming_msg}' | Estado actual: {conversational_state.get(sender, 'start')}")
     
     resp = MessagingResponse()
     msg = resp.message()
@@ -84,7 +88,7 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
             conversational_state[sender] = 'admin_menu'
             msg.body("✅ *Acceso Permitido*\nBienvenido al Boliche OS v1.0\n\n*MENÚ PRINCIPAL:*\n\n1. 📊 Ver Dashboard en Vivo\n2. 📢 Crear Difusión (Broadcast)\n3. 🎫 Alta VIP Manual (Rápida)\n4. 🚪 Salir del Sistema\n\n_Enviá el número de la opción._")
         else:
-            conversational_state[sender] = 'start' # Lo patea afuera
+            conversational_state[sender] = 'start'
             msg.body("❌ Contraseña incorrecta. Acceso denegado.")
         return Response(content=str(resp), media_type="application/xml")
 
@@ -96,6 +100,8 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
             total_pax = db.query(func.sum(Reserva.cantidad)).scalar() or 0
             ocupacion = int((total_pax / CUPO_TOTAL) * 100)
             msg.body(f"📊 *DASHBOARD EN VIVO*\n\n👥 Pax Totales: {total_pax}/{CUPO_TOTAL}\n📉 Ocupación: {ocupacion}%\n🎫 Tickets Emitidos: {total_reservas}\n\n_Escribí 0 para volver al menú._")
+            # Truco para mantenerse en el menú si escribe 0 luego
+            conversational_state[sender] = 'admin_menu' 
         
         elif msg_lower == '2':
             # --- BROADCAST SETUP ---
@@ -103,14 +109,17 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
             msg.body("📢 *MODO DIFUSIÓN*\n\nEscribí el mensaje que querés enviar a TODA la base de datos.\n(Podés incluir emojis y links).\n\n_Escribí CANCELAR para volver._")
         
         elif msg_lower == '3':
-            # --- ALTA MANUAL ---
+            # --- ALTA MANUAL (FIXED) ---
             conversational_state[sender] = 'admin_manual_add'
-            msg.body("🎫 *ALTA RÁPIDA VIP*\n\nIngresá los datos así: *Nombre, Cantidad*\nEjemplo: _Ricky Fort, 5_")
+            msg.body("🎫 *ALTA RÁPIDA VIP*\n\nIngresá los datos así: *Nombre, Cantidad*\nEjemplo: _Messi, 10_\n\n_Escribí MENU para salir._")
         
         elif msg_lower == '4':
             # --- SALIR ---
             conversational_state[sender] = 'start'
             msg.body("🔒 Sesión cerrada. Volviendo a modo bot.")
+        
+        elif msg_lower == '0':
+             msg.body("🔙 Estás en el Menú Principal.")
         
         else:
             msg.body("Opción no válida. Enviá 1, 2, 3 o 4.")
@@ -123,9 +132,7 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
             conversational_state[sender] = 'admin_menu'
             msg.body("Difusión cancelada. Volviendo al menú.")
         else:
-            # Guardamos el borrador
             temp_data[sender] = {'broadcast_msg': incoming_msg}
-            # Calculamos alcance
             usuarios_unicos = db.query(Reserva.whatsapp_id).distinct().count()
             conversational_state[sender] = 'admin_broadcast_confirm'
             msg.body(f"⚠️ *CONFIRMACIÓN DE ENVÍO*\n\nVas a enviar este mensaje a *{usuarios_unicos} usuarios*.\n\n_Mensaje:_\n\"{incoming_msg}\"\n\n¿Estás seguro?\n1. ✅ SI, ENVIAR\n2. ❌ NO, CANCELAR")
@@ -133,10 +140,17 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
 
     if state == 'admin_broadcast_confirm':
         if msg_lower == '1':
-            # Aquí iría la lógica de Twilio Client API para iterar y enviar real.
-            # Para la demo, simulamos el éxito.
+            # FIX BROADCAST: Enviamos confirmación + Preview Real
             usuarios_unicos = db.query(Reserva.whatsapp_id).distinct().count()
-            msg.body(f"🚀 *DIFUSIÓN COMPLETADA*\n\nEl mensaje se envió exitosamente a {usuarios_unicos} destinatarios.\n\n_Volviendo al menú..._")
+            mensaje_original = temp_data[sender].get('broadcast_msg', '')
+            
+            # Mensaje 1: Confirmación Sistema
+            msg.body(f"🚀 *DIFUSIÓN INICIADA*\nEl sistema está procesando {usuarios_unicos} envíos.\n\n⬇️ *Vista previa de lo que recibirán:*")
+            
+            # Mensaje 2: El Broadcast Real (Simulado hacia el Admin)
+            # Usamos resp.message() de nuevo para crear un segundo globo de texto
+            preview_msg = resp.message(mensaje_original)
+            
             conversational_state[sender] = 'admin_menu'
         else:
             msg.body("Operación cancelada. Volviendo al menú.")
@@ -144,43 +158,44 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
         return Response(content=str(resp), media_type="application/xml")
 
     if state == 'admin_manual_add':
+        if msg_lower == "menu":
+            conversational_state[sender] = 'admin_menu'
+            msg.body("Volviendo al menú principal.")
+            return Response(content=str(resp), media_type="application/xml")
+
         try:
             # Parseamos "Nombre, Cantidad"
-            datos = incoming_msg.split(',')
-            nombre = datos[0].strip().title()
-            cantidad = int(datos[1].strip())
-            
-            # Guardamos directo
-            nueva_reserva = Reserva(
-                whatsapp_id=sender, # Queda a nombre del admin o se podría poner "Manual"
-                nombre_completo=nombre + " (VIP MANUAL)",
-                tipo_entrada="Mesa VIP",
-                cantidad=cantidad,
-                confirmada=True,
-                rrpp_asignado="Dueño/Admin"
-            )
-            db.add(nueva_reserva)
-            db.commit()
-            
-            # Generamos QR para reenviar
-            url_validacion = f"https://bot-boliche-demo.onrender.com/check/{nueva_reserva.id}"
-            url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={url_validacion}"
-            
-            msg.body(f"✅ *Alta Exitosa*\nSe generó la entrada para *{nombre}* ({cantidad} pax).")
-            msg.media(url_qr)
-            
-            # Pequeño hack: enviamos otro mensaje para volver al menú
-            # En XML no se puede enviar 2 msg bodies separados fácil sin delay, 
-            # así que dejamos al admin ahí o le pedimos que escriba algo.
-            # Lo dejamos en loop de manual add por si quiere agregar otro.
-            msg.body("¿Querés agregar otro? Enviá 'Nombre, Cantidad' o escribí 'MENU' para salir.")
-            
-        except:
-            if msg_lower == "menu":
-                conversational_state[sender] = 'admin_menu'
-                msg.body("Volviendo al menú.")
+            if ',' in incoming_msg:
+                datos = incoming_msg.split(',')
+                nombre = datos[0].strip().title()
+                cantidad = int(datos[1].strip())
+                
+                nueva_reserva = Reserva(
+                    whatsapp_id=sender, 
+                    nombre_completo=nombre + " (VIP MANUAL)",
+                    tipo_entrada="Mesa VIP",
+                    cantidad=cantidad,
+                    confirmada=True,
+                    rrpp_asignado="Dueño/Admin"
+                )
+                db.add(nueva_reserva)
+                db.commit()
+                
+                url_validacion = f"https://bot-boliche-demo.onrender.com/check/{nueva_reserva.id}"
+                url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={url_validacion}"
+                
+                msg.body(f"✅ *Alta Exitosa*\nGenerado para: *{nombre}* ({cantidad} pax).")
+                msg.media(url_qr)
+                
+                # Hack para enviar el siguiente prompt
+                # Twilio XML permite mandar varios mensajes. Agregamos otro:
+                resp.message("¿Otro? Enviá 'Nombre, Cantidad' o 'MENU'.")
             else:
-                msg.body("⚠️ *Error de Formato*\n\nTenés que escribir: Nombre, Cantidad\nEjemplo: _Messi, 10_")
+                 msg.body("⚠️ *Error de Formato*\nFalta la coma.\n\nEscribí: Nombre, Cantidad\nEjemplo: _Messi, 10_")
+
+        except Exception as e:
+            print(f"ERROR EN MANUAL ADD: {e}") # Log del error
+            msg.body(f"⚠️ Error procesando el dato. Asegurate de usar números para la cantidad.\nEjemplo: Ricky, 5")
         
         return Response(content=str(resp), media_type="application/xml")
 
@@ -189,7 +204,6 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
 
     # --- INICIO LÓGICA USUARIO NORMAL (CLIENTE) ---
     
-    # Atribución RRPP
     rrpp_detectado = "Organico"
     if "vengo de" in msg_lower:
         partes = msg_lower.split("vengo de ")
@@ -203,7 +217,6 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
     if sender in user_attribution:
         rrpp_detectado = user_attribution[sender]
 
-    # Trigger Cumpleaños
     if "cumple" in msg_lower:
          msg.body("🎂 *¡Feliz Cumpleaños!* 🎂\n\n🎁 Si traes a 10 amigos, te regalamos un Champagne.\nEscribí '1' para reservar.")
          return Response(content=str(resp), media_type="application/xml")
@@ -339,7 +352,6 @@ def validar_ticket(ticket_id: int, db: Session = Depends(get_db)):
 def ver_panel(db: Session = Depends(get_db)):
     reservas = db.query(Reserva).order_by(Reserva.id.desc()).all()
     
-    # Datos para el Gráfico
     total_general = db.query(func.count(Reserva.id)).filter(Reserva.tipo_entrada == 'General').scalar() or 0
     total_vip = db.query(func.count(Reserva.id)).filter(Reserva.tipo_entrada == 'Mesa VIP').scalar() or 0
     
