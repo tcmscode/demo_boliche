@@ -11,6 +11,7 @@ import os
 import sys
 
 # --- CONFIGURACIÓN DATABASE ---
+# Forzamos tabla nueva (v3) para limpiar errores de esquema previos
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://usuario:password@localhost/dbname")
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -21,7 +22,7 @@ Base = declarative_base()
 
 # --- MODELO DB ---
 class Reserva(Base):
-    __tablename__ = "reservas_v2"
+    __tablename__ = "reservas_v3"  # <--- CAMBIO IMPORTANTE: TABLA LIMPIA
     
     id = Column(Integer, primary_key=True, index=True)
     whatsapp_id = Column(String, index=True)
@@ -32,6 +33,7 @@ class Reserva(Base):
     fecha_reserva = Column(DateTime, default=datetime.datetime.utcnow)
     rrpp_asignado = Column(String, default="Organico")
 
+# Creamos la tabla nueva
 Base.metadata.create_all(bind=engine)
 
 def get_db():
@@ -50,153 +52,50 @@ DIRECTORIO_RRPP = {
     "general": {"nombre": "Soporte General", "celular": "5491133333333"}
 }
 
-# --- MEMORIA DEL SISTEMA ---
-# Definimos esto global para poder resetearlo
+# --- MEMORIA GLOBAL ---
 conversational_state = {}
 temp_data = {}
 user_attribution = {} 
-
-# --- CONFIGURACIÓN ADMIN ---
 ADMIN_PASSWORD = "Moscu123"
 CUPO_TOTAL = 150
 
 @app.post("/webhook")
 async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Session = Depends(get_db)):
     
-    # Declaramos globales para poder modificarlas en el reset
+    # Declaramos globales para poder resetearlas
     global conversational_state, temp_data
     
     sender = From
     incoming_msg = Body.strip()
     msg_lower = incoming_msg.lower()
     
+    # LOG DE DEBUG: Esto aparecerá en el dashboard de Render si algo falla
+    print(f"DEBUG: Mensaje recibido de {sender}: {incoming_msg}")
+    
     resp = MessagingResponse()
     msg = resp.message()
 
-    # --- 🚨 BOTÓN DE PÁNICO (GLOBAL) ---
-    # Si escribís "SALIR" o "EXIT" en cualquier momento, te lleva al inicio.
-    if msg_lower == "salir" or msg_lower == "exit":
+    # --- 🚨 BOTÓN DE PÁNICO NUCLEAR ---
+    # Si escribis cualquiera de estas palabras, el bot se resetea.
+    palabras_escape = ["salir", "exit", "basta", "menu", "reset", "inicio"]
+    
+    # Chequeamos si la palabra exacta es una de escape, o si empieza con "salir"
+    if msg_lower in palabras_escape or msg_lower.startswith("salir"):
         conversational_state[sender] = 'start'
         temp_data[sender] = {}
-        msg.body("🔄 *Reinicio Forzado*\nVolviste al menú principal.")
+        msg.body("🔄 *SISTEMA REINICIADO*\n\nVolviste al menú principal de clientes.")
         return Response(content=str(resp), media_type="application/xml")
 
-    # --- 🛡️ SISTEMA OPERATIVO ADMIN (BOLICHE OS) ---
-    
-    # Trigger de entrada al Admin
-    if msg_lower == "/admin":
-        conversational_state[sender] = 'admin_auth'
-        msg.body("🔐 *SISTEMA SEGURO MOSCU*\n\nPor favor, ingresá la contraseña de administrador:")
-        return Response(content=str(resp), media_type="application/xml")
-    
-    # --- MODO DIOS (SOLO TU NÚMERO) ---
-    NUMERO_ADMIN = "whatsapp:+5491131850807" 
-    if sender == NUMERO_ADMIN and msg_lower.startswith("admin reset"):
+    # --- COMANDO ADMIN RESET (Modo Dios) ---
+    if msg_lower == "admin reset":
         db.query(Reserva).delete()
         db.commit()
-        # ACÁ ESTABA EL ERROR ANTES: AHORA RESETEAMOS LA MEMORIA TAMBIÉN
-        conversational_state = {} 
+        conversational_state = {} # Borra memoria de TODOS
         temp_data = {}
-        msg.body("🗑️ *FACTORY RESET COMPLETADO*\n- Base de datos vacía.\n- Memoria de usuarios borrada.\n- Sistema listo.")
+        msg.body("🗑️ *FACTORY RESET V5*\n\n- Base de Datos (v3) Limpia.\n- Memoria RAM Limpia.\n- Sistema Listo.")
         return Response(content=str(resp), media_type="application/xml")
 
-    # --- LÓGICA DE LOGIN ADMIN ---
-    state = conversational_state.get(sender, 'start')
-
-    if state == 'admin_auth':
-        if incoming_msg == ADMIN_PASSWORD:
-            conversational_state[sender] = 'admin_menu'
-            msg.body("✅ *Acceso Permitido*\nBienvenido al Boliche OS v1.0\n\n*MENÚ PRINCIPAL:*\n\n1. 📊 Ver Dashboard en Vivo\n2. 📢 Crear Difusión (Broadcast)\n3. 🎫 Alta VIP Manual (Rápida)\n4. 🚪 Salir del Sistema\n\n_Enviá el número de la opción._")
-        else:
-            conversational_state[sender] = 'start'
-            msg.body("❌ Contraseña incorrecta. Acceso denegado.")
-        return Response(content=str(resp), media_type="application/xml")
-
-    # --- MENÚ ADMIN ---
-    if state == 'admin_menu':
-        if msg_lower == '1':
-            total_reservas = db.query(func.count(Reserva.id)).scalar()
-            total_pax = db.query(func.sum(Reserva.cantidad)).scalar() or 0
-            ocupacion = int((total_pax / CUPO_TOTAL) * 100)
-            msg.body(f"📊 *DASHBOARD EN VIVO*\n\n👥 Pax Totales: {total_pax}/{CUPO_TOTAL}\n📉 Ocupación: {ocupacion}%\n🎫 Tickets Emitidos: {total_reservas}\n\n_Escribí 0 para actualizar._")
-            conversational_state[sender] = 'admin_menu' 
-        
-        elif msg_lower == '2':
-            conversational_state[sender] = 'admin_broadcast_draft'
-            msg.body("📢 *MODO DIFUSIÓN*\n\nEscribí el mensaje a enviar.\n_Escribí SALIR para cancelar._")
-        
-        elif msg_lower == '3':
-            conversational_state[sender] = 'admin_manual_add'
-            msg.body("🎫 *ALTA RÁPIDA VIP*\n\nIngresá: *Nombre, Cantidad*\nEjemplo: _Messi, 10_\n\n_Escribí SALIR para volver._")
-        
-        elif msg_lower == '4':
-            conversational_state[sender] = 'start'
-            msg.body("🔒 Sesión cerrada.")
-        
-        elif msg_lower == '0':
-             msg.body("🔙 Menú Principal.")
-        
-        else:
-            msg.body("Opción no válida. Enviá 1, 2, 3 o 4.")
-        
-        return Response(content=str(resp), media_type="application/xml")
-
-    # --- HERRAMIENTAS ADMIN ---
-    if state == 'admin_broadcast_draft':
-        temp_data[sender] = {'broadcast_msg': incoming_msg}
-        usuarios_unicos = db.query(Reserva.whatsapp_id).distinct().count()
-        conversational_state[sender] = 'admin_broadcast_confirm'
-        msg.body(f"⚠️ *CONFIRMAR ENVÍO*\n\nDestinatarios: {usuarios_unicos}\n\nMensaje:\n_{incoming_msg}_\n\n1. ✅ ENVIAR\n2. ❌ CANCELAR")
-        return Response(content=str(resp), media_type="application/xml")
-
-    if state == 'admin_broadcast_confirm':
-        if msg_lower == '1':
-            usuarios_unicos = db.query(Reserva.whatsapp_id).distinct().count()
-            mensaje_original = temp_data[sender].get('broadcast_msg', '')
-            msg.body(f"🚀 *ENVIADO*\nSe envió a {usuarios_unicos} usuarios.\n\n⬇️ *Así lo verán:*")
-            resp.message(mensaje_original) # Preview real
-            conversational_state[sender] = 'admin_menu'
-        else:
-            msg.body("Cancelado. Volviendo al menú.")
-            conversational_state[sender] = 'admin_menu'
-        return Response(content=str(resp), media_type="application/xml")
-
-    if state == 'admin_manual_add':
-        # Validación extra para que no se rompa si no pones coma
-        if "," not in incoming_msg:
-             msg.body("⚠️ *Error de Formato*\n\nFalta la coma (,).\nEscribí: *Nombre, Cantidad*\nEjemplo: _Ricky, 5_")
-             return Response(content=str(resp), media_type="application/xml")
-
-        try:
-            datos = incoming_msg.split(',')
-            nombre = datos[0].strip().title()
-            cantidad = int(datos[1].strip())
-            
-            nueva_reserva = Reserva(
-                whatsapp_id=sender, 
-                nombre_completo=nombre + " (VIP MANUAL)",
-                tipo_entrada="Mesa VIP",
-                cantidad=cantidad,
-                confirmada=True,
-                rrpp_asignado="Dueño/Admin"
-            )
-            db.add(nueva_reserva)
-            db.commit()
-            
-            url_validacion = f"https://bot-boliche-demo.onrender.com/check/{nueva_reserva.id}"
-            url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={url_validacion}"
-            
-            msg.body(f"✅ *Alta Exitosa*\nCliente: {nombre}\nPax: {cantidad}")
-            msg.media(url_qr)
-            resp.message("¿Otro? Enviá 'Nombre, Cantidad' o escribí SALIR.")
-            
-        except Exception as e:
-            msg.body("⚠️ Error leyendo el número. Intentá de nuevo.")
-        
-        return Response(content=str(resp), media_type="application/xml")
-
-    # --- INICIO LÓGICA CLIENTE ---
-    
+    # --- ATRIBUCIÓN DE RRPP (Se ejecuta siempre antes) ---
     rrpp_detectado = "Organico"
     if "vengo de" in msg_lower:
         partes = msg_lower.split("vengo de ")
@@ -210,204 +109,181 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
     if sender in user_attribution:
         rrpp_detectado = user_attribution[sender]
 
-    if "cumple" in msg_lower:
-         msg.body("🎂 *¡Feliz Cumpleaños!* 🎂\n\n🎁 Si traes a 10 amigos, te regalamos un Champagne.\nEscribí '1' para reservar.")
-         return Response(content=str(resp), media_type="application/xml")
 
+    # --- MÁQUINA DE ESTADOS ---
     state = conversational_state.get(sender, 'start')
 
-    if state == 'start':
-        total_pax = db.query(func.sum(Reserva.cantidad)).scalar() or 0
-        url_flyer = "https://i.ibb.co/mFG17TST/Imagen-Bohemian-Demo.jpg" 
+    # 1. TRIGGER LOGIN ADMIN
+    if msg_lower == "/admin":
+        conversational_state[sender] = 'admin_auth'
+        msg.body("🔐 *BOLICHE OS v5*\nIngresá contraseña:")
+        return Response(content=str(resp), media_type="application/xml")
 
-        saludo_extra = ""
-        if sender in temp_data and 'rrpp_origen' in temp_data[sender]:
-            nombre = DIRECTORIO_RRPP[temp_data[sender]['rrpp_origen']]['nombre']
-            saludo_extra = f"👋 ¡Te envía *{nombre}*!\n"
-
-        if total_pax >= CUPO_TOTAL:
-             msg.body("⛔ *SOLD OUT* ⛔\n\nCapacidad máxima alcanzada.")
-        elif total_pax > (CUPO_TOTAL - 20): 
-             msg.body(f"{saludo_extra}🔥 *¡Últimos lugares en MOSCU!* 🔥\nQuedan {CUPO_TOTAL - total_pax} cupos.\n\n1. 🎫 Entrada General (con QR)\n2. 🍾 Mesa VIP (Lista)\n3. 🙋 Ayuda (RRPP)")
-             msg.media(url_flyer)
-             conversational_state[sender] = 'choosing_option'
+    # 2. LOGIN ADMIN
+    if state == 'admin_auth':
+        if incoming_msg == ADMIN_PASSWORD:
+            conversational_state[sender] = 'admin_menu'
+            msg.body("✅ *Acceso Admin*\n\n1. 📊 Dashboard\n2. 📢 Difusión\n3. 🎫 Alta VIP Manual\n4. 🚪 Salir")
         else:
-             msg.body(f"{saludo_extra}¡Hola! Bienvenid@ a *MOSCU*.\n\n¿Qué querés hacer hoy?\n\n1. 🎫 Entrada General (con QR)\n2. 🍾 Mesa VIP (Lista)\n3. 🙋 Ayuda (RRPP)")
-             msg.media(url_flyer) 
-             conversational_state[sender] = 'choosing_option'
-
-    elif state == 'choosing_option':
-        if msg_lower == '1':
-            temp_data[sender] = {'tipo': 'General', 'nombres_invitados': [], 'rrpp': rrpp_detectado}
-            msg.body("🎫 *Entrada General*\n\n¿Cuántas entradas necesitás? (Enviá número)")
-            conversational_state[sender] = 'general_cantidad'
-        elif msg_lower == '2':
-            temp_data[sender] = {'tipo': 'Mesa VIP', 'rrpp': rrpp_detectado}
-            msg.body("🍾 *Mesa VIP*\n\n¿A nombre de quién reservamos?")
-            conversational_state[sender] = 'vip_nombre'
-        elif msg_lower == '3':
-            rrpp_usuario = user_attribution.get(sender, 'general')
-            datos = DIRECTORIO_RRPP.get(rrpp_usuario, DIRECTORIO_RRPP['general'])
-            link_wa = f"https://wa.me/{datos['celular']}?text=Hola,%20necesito%20ayuda"
-            msg.body(f"📞 *Derivación Inteligente*\nHabla con tu RRPP asignado: *{datos['nombre']}*.\n👉 {link_wa}")
             conversational_state[sender] = 'start'
-        else:
-            msg.body("Respondé 1, 2 o 3.")
+            msg.body("❌ Clave incorrecta.")
+        return Response(content=str(resp), media_type="application/xml")
 
-    elif state == 'general_cantidad':
-        if msg_lower.isdigit():
-            cantidad = int(msg_lower)
-            if cantidad > 0:
-                if sender not in temp_data: temp_data[sender] = {}
-                temp_data[sender]['total_esperado'] = cantidad
-                msg.body(f"Perfecto: {cantidad} personas.\nEscribí el *Nombre y Apellido* de la nº 1:")
-                conversational_state[sender] = 'general_pidiendo_nombres'
-            else:
-                msg.body("Número inválido.")
-        else:
-            msg.body("Solo números.")
-
-    elif state == 'general_pidiendo_nombres':
-        data = temp_data.get(sender)
-        nombres = data['nombres_invitados']
-        nombres.append(incoming_msg.title()) 
+    # 3. MENÚ ADMIN
+    if state == 'admin_menu':
+        if msg_lower == '1': # Dashboard
+            total = db.query(func.count(Reserva.id)).scalar()
+            msg.body(f"📊 *Stats*\nTickets: {total}\n(Enviá 0 para actualizar)")
+            # Nos quedamos en el menú
         
-        if len(nombres) < data['total_esperado']:
-            msg.body(f"Listo. Nombre de la persona nº {len(nombres) + 1}:")
-        else:
-            msg.body("⏳ Generando Accesos Digitales Únicos...")
-            rrpp_final = data.get('rrpp', 'Organico')
-
-            for nombre_invitado in nombres:
-                nueva_reserva = Reserva(
-                    whatsapp_id=sender,
-                    nombre_completo=nombre_invitado,
-                    tipo_entrada="General",
-                    cantidad=1,
-                    confirmada=True,
-                    rrpp_asignado=rrpp_final
-                )
-                db.add(nueva_reserva)
-                db.commit()
-                
-                url_validacion = f"https://bot-boliche-demo.onrender.com/check/{nueva_reserva.id}"
-                url_qr_image = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={url_validacion}"
-                
-                mensaje = resp.message(f"✅ Ticket Digital: *{nombre_invitado}*\nID: {nueva_reserva.id}")
-                mensaje.media(url_qr_image)
-            
+        elif msg_lower == '2': # Broadcast
+            conversational_state[sender] = 'admin_broadcast'
+            msg.body("📢 Escribí el mensaje para todos:")
+        
+        elif msg_lower == '3': # Alta Manual
+            conversational_state[sender] = 'admin_manual'
+            msg.body("🎫 *Alta Manual*\n\nEscribí: Nombre, Cantidad\nEj: _Messi, 10_")
+        
+        elif msg_lower == '4': # Salir
             conversational_state[sender] = 'start'
-            temp_data[sender] = {}
+            msg.body("👋 Sesión cerrada.")
+        
+        elif msg_lower == '0':
+            msg.body("🔙 Menú Principal")
+
+        else:
+            msg.body("Opción no válida. 1, 2, 3 o 4.")
+        
+        return Response(content=str(resp), media_type="application/xml")
+
+    # 4. HERRAMIENTAS ADMIN
+    if state == 'admin_broadcast':
+        # Simulamos envío y volvemos al menú
+        cant = db.query(Reserva.id).count()
+        msg.body(f"🚀 *Enviado a {cant} usuarios:*\n\n_{incoming_msg}_")
+        conversational_state[sender] = 'admin_menu'
+        return Response(content=str(resp), media_type="application/xml")
+
+    if state == 'admin_manual':
+        if "," not in incoming_msg:
+            msg.body("⚠️ Falta la coma.\nEscribí: Nombre, Cantidad")
+            return Response(content=str(resp), media_type="application/xml")
+        
+        try:
+            datos = incoming_msg.split(',')
+            nombre = datos[0].strip().title()
+            cant = int(datos[1].strip())
+            
+            nueva = Reserva(whatsapp_id=sender, nombre_completo=nombre+" (VIP)", tipo_entrada="Mesa VIP", cantidad=cant, confirmada=True, rrpp_asignado="Admin")
+            db.add(nueva)
+            db.commit()
+            
+            # QR
+            url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=VALIDO-{nueva.id}"
+            msg.body(f"✅ Agregado: {nombre}")
+            msg.media(url)
+            
+            # Creamos un SEGUNDO mensaje para preguntar si quiere otro
+            # Esto evita que se quede trabado
+            resp.message("¿Otro? Escribí 'Nombre, Cantidad' o 'MENU' para volver.")
+            
+        except:
+            msg.body("⚠️ Error en los datos. Intentá de nuevo.")
+        
+        return Response(content=str(resp), media_type="application/xml")
+
+
+    # --- CLIENTE NORMAL ---
+    if state == 'start':
+        if "cumple" in msg_lower:
+            msg.body("🎂 ¡Feliz Cumple! Escribí 1 para tu regalo.")
             return Response(content=str(resp), media_type="application/xml")
 
-    elif state == 'vip_nombre':
-        temp_data[sender]['nombre'] = incoming_msg
-        msg.body(f"Bienvenido {incoming_msg}. ¿Cuántas personas aprox?")
-        conversational_state[sender] = 'vip_cantidad'
+        # Menu Cliente
+        msg.body("👋 *Bienvenido a MOSCU*\n\n1. 🎫 Entrada General\n2. 🍾 Mesa VIP\n3. 🙋 Ayuda")
+        conversational_state[sender] = 'choosing'
+        return Response(content=str(resp), media_type="application/xml")
 
-    elif state == 'vip_cantidad':
-        if msg_lower.isdigit():
-            cantidad = int(msg_lower)
-            data = temp_data.get(sender)
-            nueva_reserva = Reserva(
-                whatsapp_id=sender,
-                nombre_completo=data.get('nombre') + " (MESA VIP)",
-                tipo_entrada="Mesa VIP",
-                cantidad=cantidad,
-                confirmada=True,
-                rrpp_asignado=data.get('rrpp', 'Organico')
-            )
-            db.add(nueva_reserva)
-            db.commit()
+    if state == 'choosing':
+        if msg_lower == '1':
+            temp_data[sender] = {'tipo': 'General'}
+            msg.body("🎫 ¿Cuántas entradas?")
+            conversational_state[sender] = 'cant_gen'
+        elif msg_lower == '2':
+            temp_data[sender] = {'tipo': 'VIP'}
+            msg.body("🍾 ¿A nombre de quién?")
+            conversational_state[sender] = 'name_vip'
+        elif msg_lower == '3':
+            msg.body("📞 Hablá con Matias: wa.me/5491112345678")
             conversational_state[sender] = 'start'
-            temp_data[sender] = {}
-            msg.body(f"🥂 *MESA CONFIRMADA*\nTitular: {nueva_reserva.nombre_completo}\n\nPresentate en Puerta VIP.")
+        else:
+            msg.body("Elegí 1, 2 o 3.")
+        return Response(content=str(resp), media_type="application/xml")
+
+    if state == 'cant_gen':
+        if msg_lower.isdigit():
+            cant = int(msg_lower)
+            temp_data[sender]['cant'] = cant
+            temp_data[sender]['names'] = []
+            msg.body("Nombre de la persona 1:")
+            conversational_state[sender] = 'names_gen'
         else:
             msg.body("Solo números.")
+        return Response(content=str(resp), media_type="application/xml")
+
+    if state == 'names_gen':
+        data = temp_data[sender]
+        data['names'].append(incoming_msg)
+        
+        if len(data['names']) < data['cant']:
+            msg.body(f"Nombre persona {len(data['names'])+1}:")
+        else:
+            # Generar
+            msg.body("⏳ Generando tickets...")
+            rrpp = data.get('rrpp_origen', 'Organico')
+            for n in data['names']:
+                res = Reserva(whatsapp_id=sender, nombre_completo=n, tipo_entrada="General", cantidad=1, confirmada=True, rrpp_asignado=rrpp)
+                db.add(res)
+                db.commit()
+                url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=ID-{res.id}"
+                m = resp.message(f"✅ Ticket: {n}")
+                m.media(url)
+            conversational_state[sender] = 'start'
+        return Response(content=str(resp), media_type="application/xml")
+
+    if state == 'name_vip':
+        temp_data[sender]['name'] = incoming_msg
+        msg.body(f"Hola {incoming_msg}, ¿cuántas personas?")
+        conversational_state[sender] = 'cant_vip'
+        return Response(content=str(resp), media_type="application/xml")
+
+    if state == 'cant_vip':
+        if msg_lower.isdigit():
+            cant = int(msg_lower)
+            data = temp_data[sender]
+            res = Reserva(whatsapp_id=sender, nombre_completo=data['name']+" (VIP)", tipo_entrada="Mesa VIP", cantidad=cant, confirmada=True)
+            db.add(res)
+            db.commit()
+            msg.body(f"🥂 Lista Confirmada para {data['name']}.")
+            conversational_state[sender] = 'start'
+        else:
+            msg.body("Solo números.")
+        return Response(content=str(resp), media_type="application/xml")
 
     return Response(content=str(resp), media_type="application/xml")
 
-# --- ENDPOINTS EXTRA (SCANNER & PANEL) ---
-
-@app.get("/check/{ticket_id}", response_class=HTMLResponse)
-def validar_ticket(ticket_id: int, db: Session = Depends(get_db)):
-    reserva = db.query(Reserva).filter(Reserva.id == ticket_id).first()
-    if not reserva:
-        return """<html><body style="background:#e74c3c;color:white;text-align:center;font-family:sans-serif;padding-top:50px;">
-        <h1 style="font-size:80px;">❌</h1><h1>TICKET INVÁLIDO</h1></body></html>"""
-    
-    return f"""<html><body style="background:#2ecc71;color:white;text-align:center;font-family:sans-serif;padding-top:50px;">
-        <h1 style="font-size:80px;">✅</h1><h1>ACCESO PERMITIDO</h1>
-        <h2>{reserva.nombre_completo}</h2><p>{reserva.tipo_entrada}</p></body></html>"""
-
+# --- PANEL WEB SIMPLIFICADO ---
 @app.get("/panel", response_class=HTMLResponse)
 def ver_panel(db: Session = Depends(get_db)):
     reservas = db.query(Reserva).order_by(Reserva.id.desc()).all()
-    total_general = db.query(func.count(Reserva.id)).filter(Reserva.tipo_entrada == 'General').scalar() or 0
-    total_vip = db.query(func.count(Reserva.id)).filter(Reserva.tipo_entrada == 'Mesa VIP').scalar() or 0
     filas = ""
     for r in reservas:
-        color_badge = '#2980b9' if r.tipo_entrada == 'General' else '#d35400'
-        rrpp_color = '#27ae60' if r.rrpp_asignado != 'Organico' else '#7f8c8d'
-        filas += f"""<tr><td>{r.id}</td><td>{r.fecha_reserva.strftime('%H:%M')}</td><td>{r.whatsapp_id}</td>
-            <td style="font-weight:bold;color:#ecf0f1;">{r.nombre_completo}</td>
-            <td><span style="background:{color_badge};padding:4px 8px;border-radius:4px;">{r.tipo_entrada}</span></td>
-            <td>{r.cantidad}</td><td style="color:{rrpp_color};font-weight:bold;">{r.rrpp_asignado}</td></tr>"""
-    
-    html = f"""
-    <html>
-    <head>
-        <title>MOSCU Night Manager</title>
-        <meta http-equiv="refresh" content="10">
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-        <script>
-            function exportTableToCSV(filename) {{
-                var csv = [];
-                var rows = document.querySelectorAll("table tr");
-                for (var i = 0; i < rows.length; i++) {{
-                    var row = [], cols = rows[i].querySelectorAll("td, th");
-                    for (var j = 0; j < cols.length; j++) {{
-                        var data = cols[j].innerText.replace(/(\\r\\n|\\n|\\r)/gm, "").replace(/(\\s\\s)/gm, " ");
-                        data = data.replace(/"/g, '""');
-                        row.push('"' + data + '"');
-                    }}
-                    csv.push(row.join(","));        
-                }}
-                var csvString = "\\uFEFF" + csv.join("\\n");
-                var blob = new Blob([csvString], {{ type: 'text/csv; charset=utf-8;' }});
-                var link = document.createElement("a");
-                link.href = URL.createObjectURL(blob);
-                link.download = filename;
-                link.click();
-            }}
-        </script>
-        <style>
-            body {{ background-color: #121212; color: #ecf0f1; font-family: 'Segoe UI', sans-serif; padding: 20px; }}
-            .container {{ max-width: 1200px; margin: 0 auto; background: #1e1e1e; padding: 20px; border-radius: 10px; }}
-            h1 {{ color: #e74c3c; border-bottom: 1px solid #333; padding-bottom: 10px; }}
-            table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
-            th {{ text-align: left; padding: 15px; background: #2c3e50; color: #bdc3c7; }}
-            td {{ padding: 15px; border-bottom: 1px solid #333; }}
-            .chart-container {{ width: 400px; margin: 20px auto; }}
-            .btn-export {{ background: #27ae60; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; float: right; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <button class="btn-export" onclick="exportTableToCSV('reservas_moscu.csv')">💾 EXPORTAR EXCEL</button>
-            <h1>🦁 MOSCU Access Control</h1>
-            <div class="chart-container"><canvas id="myChart"></canvas></div>
-            <table><thead><tr><th>ID</th><th>Hora</th><th>WhatsApp</th><th>Nombre</th><th>Tipo</th><th>Pax</th><th>RRPP</th></tr></thead><tbody>{filas}</tbody></table>
-        </div>
-        <script>
-            const ctx = document.getElementById('myChart');
-            new Chart(ctx, {{
-                type: 'doughnut',
-                data: {{ labels: ['General', 'VIP'], datasets: [{{ data: [{total_general}, {total_vip}], backgroundColor: ['#2980b9', '#d35400'], borderWidth: 0 }}] }},
-                options: {{ plugins: {{ legend: {{ labels: {{ color: 'white' }} }} }} }}
-            }});
-        </script>
-    </body>
-    </html>
+        filas += f"<tr><td>{r.id}</td><td>{r.nombre_completo}</td><td>{r.tipo_entrada}</td><td>{r.cantidad}</td><td>{r.rrpp_asignado}</td></tr>"
+    return f"""
+    <html><body>
+    <h1>Panel MOSCU V5 (Clean)</h1>
+    <table border="1">
+    <tr><th>ID</th><th>Nombre</th><th>Tipo</th><th>Pax</th><th>RRPP</th></tr>
+    {filas}
+    </table></body></html>
     """
-    return html
