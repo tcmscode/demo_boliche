@@ -8,7 +8,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 import urllib.parse 
 import datetime
 import os
-import sys # Para logs
+import sys
 
 # --- CONFIGURACIÓN DATABASE ---
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://usuario:password@localhost/dbname")
@@ -51,6 +51,7 @@ DIRECTORIO_RRPP = {
 }
 
 # --- MEMORIA DEL SISTEMA ---
+# Definimos esto global para poder resetearlo
 conversational_state = {}
 temp_data = {}
 user_attribution = {} 
@@ -62,25 +63,44 @@ CUPO_TOTAL = 150
 @app.post("/webhook")
 async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Session = Depends(get_db)):
     
+    # Declaramos globales para poder modificarlas en el reset
+    global conversational_state, temp_data
+    
     sender = From
     incoming_msg = Body.strip()
     msg_lower = incoming_msg.lower()
     
-    # LOG DE DEBUG (Miralo en Render Dashboard > Logs)
-    print(f"DEBUG: Msg de {sender}: '{incoming_msg}' | Estado actual: {conversational_state.get(sender, 'start')}")
-    
     resp = MessagingResponse()
     msg = resp.message()
 
+    # --- 🚨 BOTÓN DE PÁNICO (GLOBAL) ---
+    # Si escribís "SALIR" o "EXIT" en cualquier momento, te lleva al inicio.
+    if msg_lower == "salir" or msg_lower == "exit":
+        conversational_state[sender] = 'start'
+        temp_data[sender] = {}
+        msg.body("🔄 *Reinicio Forzado*\nVolviste al menú principal.")
+        return Response(content=str(resp), media_type="application/xml")
+
     # --- 🛡️ SISTEMA OPERATIVO ADMIN (BOLICHE OS) ---
     
-    # 1. Trigger de entrada
+    # Trigger de entrada al Admin
     if msg_lower == "/admin":
         conversational_state[sender] = 'admin_auth'
         msg.body("🔐 *SISTEMA SEGURO MOSCU*\n\nPor favor, ingresá la contraseña de administrador:")
         return Response(content=str(resp), media_type="application/xml")
     
-    # 2. Lógica de Autenticación y Menú
+    # --- MODO DIOS (SOLO TU NÚMERO) ---
+    NUMERO_ADMIN = "whatsapp:+5491131850807" 
+    if sender == NUMERO_ADMIN and msg_lower.startswith("admin reset"):
+        db.query(Reserva).delete()
+        db.commit()
+        # ACÁ ESTABA EL ERROR ANTES: AHORA RESETEAMOS LA MEMORIA TAMBIÉN
+        conversational_state = {} 
+        temp_data = {}
+        msg.body("🗑️ *FACTORY RESET COMPLETADO*\n- Base de datos vacía.\n- Memoria de usuarios borrada.\n- Sistema listo.")
+        return Response(content=str(resp), media_type="application/xml")
+
+    # --- LÓGICA DE LOGIN ADMIN ---
     state = conversational_state.get(sender, 'start')
 
     if state == 'admin_auth':
@@ -92,117 +112,90 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
             msg.body("❌ Contraseña incorrecta. Acceso denegado.")
         return Response(content=str(resp), media_type="application/xml")
 
-    # 3. Herramientas del Menú Admin
+    # --- MENÚ ADMIN ---
     if state == 'admin_menu':
         if msg_lower == '1':
-            # --- DASHBOARD ---
             total_reservas = db.query(func.count(Reserva.id)).scalar()
             total_pax = db.query(func.sum(Reserva.cantidad)).scalar() or 0
             ocupacion = int((total_pax / CUPO_TOTAL) * 100)
-            msg.body(f"📊 *DASHBOARD EN VIVO*\n\n👥 Pax Totales: {total_pax}/{CUPO_TOTAL}\n📉 Ocupación: {ocupacion}%\n🎫 Tickets Emitidos: {total_reservas}\n\n_Escribí 0 para volver al menú._")
-            # Truco para mantenerse en el menú si escribe 0 luego
+            msg.body(f"📊 *DASHBOARD EN VIVO*\n\n👥 Pax Totales: {total_pax}/{CUPO_TOTAL}\n📉 Ocupación: {ocupacion}%\n🎫 Tickets Emitidos: {total_reservas}\n\n_Escribí 0 para actualizar._")
             conversational_state[sender] = 'admin_menu' 
         
         elif msg_lower == '2':
-            # --- BROADCAST SETUP ---
             conversational_state[sender] = 'admin_broadcast_draft'
-            msg.body("📢 *MODO DIFUSIÓN*\n\nEscribí el mensaje que querés enviar a TODA la base de datos.\n(Podés incluir emojis y links).\n\n_Escribí CANCELAR para volver._")
+            msg.body("📢 *MODO DIFUSIÓN*\n\nEscribí el mensaje a enviar.\n_Escribí SALIR para cancelar._")
         
         elif msg_lower == '3':
-            # --- ALTA MANUAL (FIXED) ---
             conversational_state[sender] = 'admin_manual_add'
-            msg.body("🎫 *ALTA RÁPIDA VIP*\n\nIngresá los datos así: *Nombre, Cantidad*\nEjemplo: _Messi, 10_\n\n_Escribí MENU para salir._")
+            msg.body("🎫 *ALTA RÁPIDA VIP*\n\nIngresá: *Nombre, Cantidad*\nEjemplo: _Messi, 10_\n\n_Escribí SALIR para volver._")
         
         elif msg_lower == '4':
-            # --- SALIR ---
             conversational_state[sender] = 'start'
-            msg.body("🔒 Sesión cerrada. Volviendo a modo bot.")
+            msg.body("🔒 Sesión cerrada.")
         
         elif msg_lower == '0':
-             msg.body("🔙 Estás en el Menú Principal.")
+             msg.body("🔙 Menú Principal.")
         
         else:
             msg.body("Opción no válida. Enviá 1, 2, 3 o 4.")
         
         return Response(content=str(resp), media_type="application/xml")
 
-    # 4. Lógica interna de herramientas Admin
+    # --- HERRAMIENTAS ADMIN ---
     if state == 'admin_broadcast_draft':
-        if msg_lower == "cancelar":
-            conversational_state[sender] = 'admin_menu'
-            msg.body("Difusión cancelada. Volviendo al menú.")
-        else:
-            temp_data[sender] = {'broadcast_msg': incoming_msg}
-            usuarios_unicos = db.query(Reserva.whatsapp_id).distinct().count()
-            conversational_state[sender] = 'admin_broadcast_confirm'
-            msg.body(f"⚠️ *CONFIRMACIÓN DE ENVÍO*\n\nVas a enviar este mensaje a *{usuarios_unicos} usuarios*.\n\n_Mensaje:_\n\"{incoming_msg}\"\n\n¿Estás seguro?\n1. ✅ SI, ENVIAR\n2. ❌ NO, CANCELAR")
+        temp_data[sender] = {'broadcast_msg': incoming_msg}
+        usuarios_unicos = db.query(Reserva.whatsapp_id).distinct().count()
+        conversational_state[sender] = 'admin_broadcast_confirm'
+        msg.body(f"⚠️ *CONFIRMAR ENVÍO*\n\nDestinatarios: {usuarios_unicos}\n\nMensaje:\n_{incoming_msg}_\n\n1. ✅ ENVIAR\n2. ❌ CANCELAR")
         return Response(content=str(resp), media_type="application/xml")
 
     if state == 'admin_broadcast_confirm':
         if msg_lower == '1':
-            # FIX BROADCAST: Enviamos confirmación + Preview Real
             usuarios_unicos = db.query(Reserva.whatsapp_id).distinct().count()
             mensaje_original = temp_data[sender].get('broadcast_msg', '')
-            
-            # Mensaje 1: Confirmación Sistema
-            msg.body(f"🚀 *DIFUSIÓN INICIADA*\nEl sistema está procesando {usuarios_unicos} envíos.\n\n⬇️ *Vista previa de lo que recibirán:*")
-            
-            # Mensaje 2: El Broadcast Real (Simulado hacia el Admin)
-            # Usamos resp.message() de nuevo para crear un segundo globo de texto
-            preview_msg = resp.message(mensaje_original)
-            
+            msg.body(f"🚀 *ENVIADO*\nSe envió a {usuarios_unicos} usuarios.\n\n⬇️ *Así lo verán:*")
+            resp.message(mensaje_original) # Preview real
             conversational_state[sender] = 'admin_menu'
         else:
-            msg.body("Operación cancelada. Volviendo al menú.")
+            msg.body("Cancelado. Volviendo al menú.")
             conversational_state[sender] = 'admin_menu'
         return Response(content=str(resp), media_type="application/xml")
 
     if state == 'admin_manual_add':
-        if msg_lower == "menu":
-            conversational_state[sender] = 'admin_menu'
-            msg.body("Volviendo al menú principal.")
-            return Response(content=str(resp), media_type="application/xml")
+        # Validación extra para que no se rompa si no pones coma
+        if "," not in incoming_msg:
+             msg.body("⚠️ *Error de Formato*\n\nFalta la coma (,).\nEscribí: *Nombre, Cantidad*\nEjemplo: _Ricky, 5_")
+             return Response(content=str(resp), media_type="application/xml")
 
         try:
-            # Parseamos "Nombre, Cantidad"
-            if ',' in incoming_msg:
-                datos = incoming_msg.split(',')
-                nombre = datos[0].strip().title()
-                cantidad = int(datos[1].strip())
-                
-                nueva_reserva = Reserva(
-                    whatsapp_id=sender, 
-                    nombre_completo=nombre + " (VIP MANUAL)",
-                    tipo_entrada="Mesa VIP",
-                    cantidad=cantidad,
-                    confirmada=True,
-                    rrpp_asignado="Dueño/Admin"
-                )
-                db.add(nueva_reserva)
-                db.commit()
-                
-                url_validacion = f"https://bot-boliche-demo.onrender.com/check/{nueva_reserva.id}"
-                url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={url_validacion}"
-                
-                msg.body(f"✅ *Alta Exitosa*\nGenerado para: *{nombre}* ({cantidad} pax).")
-                msg.media(url_qr)
-                
-                # Hack para enviar el siguiente prompt
-                # Twilio XML permite mandar varios mensajes. Agregamos otro:
-                resp.message("¿Otro? Enviá 'Nombre, Cantidad' o 'MENU'.")
-            else:
-                 msg.body("⚠️ *Error de Formato*\nFalta la coma.\n\nEscribí: Nombre, Cantidad\nEjemplo: _Messi, 10_")
-
+            datos = incoming_msg.split(',')
+            nombre = datos[0].strip().title()
+            cantidad = int(datos[1].strip())
+            
+            nueva_reserva = Reserva(
+                whatsapp_id=sender, 
+                nombre_completo=nombre + " (VIP MANUAL)",
+                tipo_entrada="Mesa VIP",
+                cantidad=cantidad,
+                confirmada=True,
+                rrpp_asignado="Dueño/Admin"
+            )
+            db.add(nueva_reserva)
+            db.commit()
+            
+            url_validacion = f"https://bot-boliche-demo.onrender.com/check/{nueva_reserva.id}"
+            url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={url_validacion}"
+            
+            msg.body(f"✅ *Alta Exitosa*\nCliente: {nombre}\nPax: {cantidad}")
+            msg.media(url_qr)
+            resp.message("¿Otro? Enviá 'Nombre, Cantidad' o escribí SALIR.")
+            
         except Exception as e:
-            print(f"ERROR EN MANUAL ADD: {e}") # Log del error
-            msg.body(f"⚠️ Error procesando el dato. Asegurate de usar números para la cantidad.\nEjemplo: Ricky, 5")
+            msg.body("⚠️ Error leyendo el número. Intentá de nuevo.")
         
         return Response(content=str(resp), media_type="application/xml")
 
-    # --- FIN LÓGICA ADMIN ---
-
-
-    # --- INICIO LÓGICA USUARIO NORMAL (CLIENTE) ---
+    # --- INICIO LÓGICA CLIENTE ---
     
     rrpp_detectado = "Organico"
     if "vengo de" in msg_lower:
@@ -221,7 +214,6 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
          msg.body("🎂 *¡Feliz Cumpleaños!* 🎂\n\n🎁 Si traes a 10 amigos, te regalamos un Champagne.\nEscribí '1' para reservar.")
          return Response(content=str(resp), media_type="application/xml")
 
-    # Máquina de Estados Cliente
     state = conversational_state.get(sender, 'start')
 
     if state == 'start':
@@ -351,10 +343,8 @@ def validar_ticket(ticket_id: int, db: Session = Depends(get_db)):
 @app.get("/panel", response_class=HTMLResponse)
 def ver_panel(db: Session = Depends(get_db)):
     reservas = db.query(Reserva).order_by(Reserva.id.desc()).all()
-    
     total_general = db.query(func.count(Reserva.id)).filter(Reserva.tipo_entrada == 'General').scalar() or 0
     total_vip = db.query(func.count(Reserva.id)).filter(Reserva.tipo_entrada == 'Mesa VIP').scalar() or 0
-    
     filas = ""
     for r in reservas:
         color_badge = '#2980b9' if r.tipo_entrada == 'General' else '#d35400'
@@ -406,31 +396,15 @@ def ver_panel(db: Session = Depends(get_db)):
         <div class="container">
             <button class="btn-export" onclick="exportTableToCSV('reservas_moscu.csv')">💾 EXPORTAR EXCEL</button>
             <h1>🦁 MOSCU Access Control</h1>
-            
-            <div class="chart-container">
-                <canvas id="myChart"></canvas>
-            </div>
-            
-            <table>
-                <thead><tr><th>ID</th><th>Hora</th><th>WhatsApp</th><th>Nombre</th><th>Tipo</th><th>Pax</th><th>RRPP</th></tr></thead>
-                <tbody>{filas}</tbody>
-            </table>
+            <div class="chart-container"><canvas id="myChart"></canvas></div>
+            <table><thead><tr><th>ID</th><th>Hora</th><th>WhatsApp</th><th>Nombre</th><th>Tipo</th><th>Pax</th><th>RRPP</th></tr></thead><tbody>{filas}</tbody></table>
         </div>
         <script>
             const ctx = document.getElementById('myChart');
             new Chart(ctx, {{
                 type: 'doughnut',
-                data: {{
-                    labels: ['General', 'VIP'],
-                    datasets: [{{
-                        data: [{total_general}, {total_vip}],
-                        backgroundColor: ['#2980b9', '#d35400'],
-                        borderWidth: 0
-                    }}]
-                }},
-                options: {{
-                    plugins: {{ legend: {{ labels: {{ color: 'white' }} }} }}
-                }}
+                data: {{ labels: ['General', 'VIP'], datasets: [{{ data: [{total_general}, {total_vip}], backgroundColor: ['#2980b9', '#d35400'], borderWidth: 0 }}] }},
+                options: {{ plugins: {{ legend: {{ labels: {{ color: 'white' }} }} }} }}
             }});
         </script>
     </body>
