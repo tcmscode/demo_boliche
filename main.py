@@ -92,10 +92,9 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
     if sender in user_attribution:
         rrpp_detectado = user_attribution[sender]
 
-    # --- TRIGGER DE CUMPLEAÑOS (NUEVO) ---
+    # --- TRIGGER DE CUMPLEAÑOS ---
     if "cumple" in incoming_msg or "cumpleaños" in incoming_msg:
          msg.body("🎂 *¡Feliz Cumpleaños!* 🎂\n\nEn **MOSCU** amamos los festejos.\n\n🎁 *Tu Regalo:* Si traes a 10 amigos, te regalamos un Champagne con Bengalas.\n\nEscribí '1' para sacar tus entradas ahora y asegurar el beneficio.")
-         # No cambiamos el estado para que pueda seguir el flujo normal si escribe 1
          return Response(content=str(resp), media_type="application/xml")
 
 
@@ -177,11 +176,8 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
                 db.add(nueva_reserva)
                 db.commit()
                 
-                # --- AQUÍ ESTÁ EL CAMBIO TÉCNICO IMPORTANTE ---
-                # El QR ya no es texto, es una URL que apunta a TU servidor para validar
-                # Reemplaza 'bot-boliche-demo' con tu nombre real si cambia, pero Render usa variables
+                # --- SCANNER URL ---
                 url_validacion = f"https://bot-boliche-demo.onrender.com/check/{nueva_reserva.id}"
-                
                 url_qr_image = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={url_validacion}"
                 
                 mensaje = resp.message(f"✅ Ticket Digital: *{nombre_invitado}*\nID: {nueva_reserva.id}")
@@ -218,36 +214,25 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
 
     return Response(content=str(resp), media_type="application/xml")
 
-# --- NUEVO: ENDPOINT DE VALIDACIÓN (SCANNER) ---
+# --- SCANNER ENDPOINT ---
 @app.get("/check/{ticket_id}", response_class=HTMLResponse)
 def validar_ticket(ticket_id: int, db: Session = Depends(get_db)):
     reserva = db.query(Reserva).filter(Reserva.id == ticket_id).first()
     
     if not reserva:
-        # PANTALLA ROJA (INVALIDO)
         return """
         <html><body style="background-color: #e74c3c; color: white; font-family: sans-serif; text-align: center; padding-top: 50px;">
-            <h1 style="font-size: 80px;">❌</h1>
-            <h1>TICKET INVÁLIDO</h1>
-            <p>No existe en base de datos.</p>
+            <h1 style="font-size: 80px;">❌</h1><h1>TICKET INVÁLIDO</h1>
         </body></html>
         """
-    
-    # PANTALLA VERDE (VALIDO)
     return f"""
     <html><body style="background-color: #2ecc71; color: white; font-family: sans-serif; text-align: center; padding-top: 50px;">
-        <h1 style="font-size: 80px;">✅</h1>
-        <h1>ACCESO PERMITIDO</h1>
-        <h2>{reserva.nombre_completo}</h2>
-        <p>Tipo: {reserva.tipo_entrada}</p>
-        <p>RRPP: {reserva.rrpp_asignado}</p>
-        <div style="margin-top: 40px; padding: 20px; background: rgba(0,0,0,0.2);">
-            <p>ID #{reserva.id} - Verificado en Sistema MOSCU</p>
-        </div>
+        <h1 style="font-size: 80px;">✅</h1><h1>ACCESO PERMITIDO</h1>
+        <h2>{reserva.nombre_completo}</h2><p>{reserva.tipo_entrada}</p>
     </body></html>
     """
 
-# --- PANEL OSCURO CON EXCEL ---
+# --- PANEL OSCURO CON EXCEL PRO ---
 @app.get("/panel", response_class=HTMLResponse)
 def ver_panel(db: Session = Depends(get_db)):
     reservas = db.query(Reserva).order_by(Reserva.id.desc()).all()
@@ -259,7 +244,7 @@ def ver_panel(db: Session = Depends(get_db)):
         
         filas += f"""
         <tr>
-            <td>#{r.id}</td>
+            <td>{r.id}</td>
             <td>{r.fecha_reserva.strftime('%H:%M')}</td>
             <td>{r.whatsapp_id}</td>
             <td style="font-weight:bold; color: #ecf0f1;">{r.nombre_completo}</td>
@@ -278,24 +263,34 @@ def ver_panel(db: Session = Depends(get_db)):
             function exportTableToCSV(filename) {{
                 var csv = [];
                 var rows = document.querySelectorAll("table tr");
+                
                 for (var i = 0; i < rows.length; i++) {{
                     var row = [], cols = rows[i].querySelectorAll("td, th");
-                    for (var j = 0; j < cols.length; j++) 
-                        row.push(cols[j].innerText);
+                    
+                    for (var j = 0; j < cols.length; j++) {{
+                        // Limpiamos saltos de linea y comillas dobles
+                        var data = cols[j].innerText.replace(/(\\r\\n|\\n|\\r)/gm, "").replace(/(\\s\\s)/gm, " ");
+                        data = data.replace(/"/g, '""');
+                        // Encapsulamos entre comillas para forzar columna en Excel
+                        row.push('"' + data + '"');
+                    }}
                     csv.push(row.join(","));        
                 }}
-                downloadCSV(csv.join("\\n"), filename);
-            }}
-            function downloadCSV(csv, filename) {{
-                var csvFile;
-                var downloadLink;
-                csvFile = new Blob([csv], {{type: "text/csv"}});
-                downloadLink = document.createElement("a");
-                downloadLink.download = filename;
-                downloadLink.href = window.URL.createObjectURL(csvFile);
-                downloadLink.style.display = "none";
-                document.body.appendChild(downloadLink);
-                downloadLink.click();
+
+                // Agregamos BOM para que Excel reconozca acentos y emojis (UTF-8)
+                var csvString = "\\uFEFF" + csv.join("\\n");
+                
+                var blob = new Blob([csvString], {{ type: 'text/csv; charset=utf-8;' }});
+                var link = document.createElement("a");
+                if (link.download !== undefined) {{
+                    var url = URL.createObjectURL(blob);
+                    link.setAttribute("href", url);
+                    link.setAttribute("download", filename);
+                    link.style.visibility = 'hidden';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                }}
             }}
         </script>
         <style>
