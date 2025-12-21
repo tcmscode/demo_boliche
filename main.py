@@ -10,7 +10,7 @@ import os
 import sys
 import traceback 
 
-# --- 1. CONFIGURACIÓN DE BASE DE DATOS (OPTIMIZADA) ---
+# --- 1. CONFIGURACIÓN DE BASE DE DATOS OPTIMIZADA ---
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://usuario:password@localhost/dbname")
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -32,7 +32,7 @@ class Reserva(Base):
     fecha_reserva = Column(DateTime, default=datetime.datetime.utcnow)
     rrpp_asignado = Column(String, default="Organico")
 
-# Crear tablas
+# Crear tablas automáticamente
 Base.metadata.create_all(bind=engine)
 
 def get_db():
@@ -59,7 +59,7 @@ conversational_state = {}
 temp_data = {}
 user_attribution = {} 
 
-# --- 3. CEREBRO DEL BOT (CORE) ---
+# --- 3. CEREBRO DEL BOT (CORE BLINDADO) ---
 @app.post("/webhook")
 async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Session = Depends(get_db)):
     
@@ -71,7 +71,7 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
         incoming_msg = Body.strip()
         msg_lower = incoming_msg.lower()
         
-        # Log en consola de Render para monitoreo
+        # Log en consola de Render para monitoreo (Vital para debug)
         print(f"📥 [MSG] De: {sender} | Texto: {incoming_msg} | Estado: {conversational_state.get(sender, 'start')}")
         
         resp = MessagingResponse()
@@ -168,7 +168,7 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
                     db.add(new_res)
                     db.commit()
                     
-                    # Corrección URL QR (Usando f-string correctamente)
+                    # Generación QR
                     url_val = f"https://bot-boliche-demo.onrender.com/check/{new_res.id}"
                     url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={url_val}"
                     
@@ -242,7 +242,6 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
                     db.add(r)
                     db.commit()
                     
-                    # URL para el Scanner (Fixed)
                     url_val = f"https://bot-boliche-demo.onrender.com/check/{r.id}"
                     url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={url_val}"
                     
