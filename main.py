@@ -10,7 +10,7 @@ import os
 import sys
 import traceback 
 
-# --- 1. BASE DE DATOS BLINDADA ---
+# --- 1. BASE DE DATOS ROBUSTA ---
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://usuario:password@localhost/dbname")
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
@@ -20,7 +20,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 class Reserva(Base):
-    __tablename__ = "reservas_v12_night" # Tabla final V12
+    __tablename__ = "reservas_v13_night" # Tabla V13
     
     id = Column(Integer, primary_key=True, index=True)
     whatsapp_id = Column(String, index=True)
@@ -73,16 +73,15 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
         resp = MessagingResponse()
         msg = resp.message()
 
-        # --- NAVEGACIÓN Y SEGURIDAD ---
+        # --- A. NAVEGACIÓN ---
         palabras_escape = ["menu", "cancelar", "inicio", "basta"]
         palabras_salida = ["salir", "exit"]
-        
         current_state = conversational_state.get(sender, 'start')
 
         if msg_lower in palabras_salida:
             conversational_state[sender] = 'start'
             temp_data[sender] = {}
-            msg.body("🔒 *Sesión Cerrada*")
+            msg.body("🔒 *Sesión Reiniciada*")
             state = 'start'
 
         elif msg_lower in palabras_escape:
@@ -99,13 +98,13 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
             db.query(Reserva).delete()
             db.commit()
             conversational_state = {}
-            msg.body("🗑️ *Base de Datos V12 Limpia*")
+            msg.body("🗑️ *Base de Datos V13 Limpia*")
             return Response(content=str(resp), media_type="application/xml")
         
         else:
             state = conversational_state.get(sender, 'start')
 
-        # --- RRPP DETECTION ---
+        # --- B. DETECCIÓN RRPP ---
         rrpp_detectado = "Organico"
         if "vengo de" in msg_lower:
             try:
@@ -119,7 +118,7 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
             except: pass
         if sender in user_attribution: rrpp_detectado = user_attribution[sender]
 
-        # --- ADMIN FLOW ---
+        # --- C. ADMIN FLOW ---
         if msg_lower == "/admin":
             conversational_state[sender] = 'admin_auth'
             msg.body("🔐 *BOLICHE OS*\nContraseña:")
@@ -128,7 +127,7 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
         if state == 'admin_auth':
             if incoming_msg == ADMIN_PASSWORD:
                 conversational_state[sender] = 'admin_menu'
-                msg.body("✅ *Acceso Admin*\n\n1. 📊 Dashboard\n2. 📢 Difusión\n3. 🎫 Alta Manual\n4. 🚪 Salir")
+                msg.body("✅ *Acceso Admin*\n\n1. 📊 Dashboard\n2. 📢 Difusión\n3. 🎫 Alta Manual (Gral/VIP)\n4. 🚪 Salir")
             else:
                 conversational_state[sender] = 'start'
                 msg.body("❌ Incorrecto.")
@@ -136,33 +135,30 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
 
         if state == 'admin_menu':
             if msg_lower == '1': 
-                # Cálculo de PAX REALES (Suma de cantidades)
                 total_pax = db.query(func.sum(Reserva.cantidad)).scalar() or 0
-                msg.body(f"📊 *Dashboard Real*\n\n👥 Pax Totales: {total_pax}/{CUPO_TOTAL}\n(Escribí 'menu' para volver)")
+                msg.body(f"📊 *Dashboard Real*\n\n👥 Pax: {total_pax}/{CUPO_TOTAL}\n(Escribí 'menu' para volver)")
             elif msg_lower == '2': 
                 conversational_state[sender] = 'admin_broadcast'
                 msg.body("📢 Escribí el mensaje de difusión:")
             elif msg_lower == '3': 
                 conversational_state[sender] = 'admin_manual_select'
-                msg.body("🎫 *Seleccioná Tipo:*\n\n1. 🎟️ General (QR)\n2. 🥂 Mesa VIP (Lista)")
+                msg.body("🎫 *Tipo de Alta:*\n1. 🎟️ General (QR)\n2. 🥂 Mesa VIP (Lista)")
             elif msg_lower == '4': 
                 conversational_state[sender] = 'start'
                 msg.body("🔒 Saliste.")
             elif msg_lower == '0' or msg_lower == 'menu':
-                msg.body("🔙 *Menú Admin*\n1. Dashboard\n2. Difusión\n3. Alta Manual\n4. Salir")
-            else:
-                msg.body("Opción inválida.")
+                msg.body("🔙 *Menú Admin*")
+            else: msg.body("Opción inválida.")
             return Response(content=str(resp), media_type="application/xml")
 
         if state == 'admin_manual_select':
             if msg_lower == '1':
                 conversational_state[sender] = 'admin_manual_general'
-                msg.body("🎟️ *Alta General*\nEscribí: Nombre, Cantidad")
+                msg.body("🎟️ *Alta General*\nFormat: Nombre, Cantidad")
             elif msg_lower == '2':
                 conversational_state[sender] = 'admin_manual_vip'
-                msg.body("🥂 *Alta Mesa VIP*\nEscribí: Nombre, Cantidad")
-            else:
-                msg.body("1 o 2.")
+                msg.body("🥂 *Alta Mesa VIP*\nFormat: Nombre, Cantidad")
+            else: msg.body("1 o 2.")
             return Response(content=str(resp), media_type="application/xml")
 
         if state == 'admin_manual_general':
@@ -176,7 +172,7 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
                     db.add(new_res)
                     db.commit()
                     url_qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=https://bot-boliche-demo.onrender.com/check/{new_res.id}"
-                    msg.body(f"✅ *Alta General*\n{nom} ({cant} pax)")
+                    msg.body(f"✅ *Alta Gral OK*\n{nom} ({cant} pax)")
                     msg.media(url_qr)
                     resp.message("¿Otro? 'Nombre, Cantidad' o 'MENU'.")
                 except: msg.body("⚠️ Error datos.")
@@ -192,7 +188,7 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
                     new_res = Reserva(whatsapp_id=sender, nombre_completo=nom+" (MANUAL VIP)", tipo_entrada="Mesa VIP", cantidad=cant, confirmada=True, rrpp_asignado="Admin")
                     db.add(new_res)
                     db.commit()
-                    msg.body(f"✅ *Mesa Cargada*\n{nom} ({cant} pax)\n_Sin QR (Lista)_")
+                    msg.body(f"✅ *Mesa OK*\n{nom} ({cant} pax)\n_Sin QR_")
                     resp.message("¿Otra? 'Nombre, Cantidad' o 'MENU'.")
                 except: msg.body("⚠️ Error datos.")
             return Response(content=str(resp), media_type="application/xml")
@@ -204,7 +200,7 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
             resp.message("🔙 *Menú Admin*")
             return Response(content=str(resp), media_type="application/xml")
 
-        # >>> ZONA CLIENTE <<<
+        # >>> CLIENTE FLOW <<<
         if state == 'start':
             if "cumple" in msg_lower:
                 msg.body("🎂 ¡Regalo Activo! Escribí 1.")
@@ -234,12 +230,21 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
                 temp_data[sender] = {'tipo': 'VIP'}
                 msg.body("🍾 *Mesa VIP*: ¿A nombre de quién?")
                 conversational_state[sender] = 'name_vip'
+            
             elif msg_lower == '3':
-                rrpp = user_attribution.get(sender, 'general')
-                cel = DIRECTORIO_RRPP.get(rrpp, DIRECTORIO_RRPP['general'])['celular']
-                msg.body(f"📞 RRPP: https://wa.me/{cel}")
+                # --- FIX OPCION 3 ---
+                # Recuperamos RRPP de forma segura
+                rrpp_key = user_attribution.get(sender, 'general')
+                if rrpp_key not in DIRECTORIO_RRPP: rrpp_key = 'general'
+                
+                info = DIRECTORIO_RRPP[rrpp_key]
+                link = f"https://wa.me/{info['celular']}?text=Hola,%20necesito%20ayuda"
+                
+                msg.body(f"📞 *Contacto RRPP ({info['nombre']})*\n\nHacé clic acá:\n👉 {link}")
+                # Reiniciamos estado para que al escribir "Hola" empiece de nuevo
                 conversational_state[sender] = 'start'
-            else: msg.body("1, 2 o 3.")
+            
+            else: msg.body("Opción inválida (1, 2 o 3).")
             return Response(content=str(resp), media_type="application/xml")
 
         if state == 'cant_gen':
@@ -296,26 +301,21 @@ async def whatsapp_webhook(Body: str = Form(...), From: str = Form(...), db: Ses
         print(f"ERROR: {traceback.format_exc()}")
         conversational_state[sender] = 'start'
         resp = MessagingResponse()
-        resp.message("⚠️ Error interno. Escribí 'Hola'.")
+        resp.message("⚠️ Error interno.")
         return Response(content=str(resp), media_type="application/xml")
 
-# --- 4. PANEL WEB (NIGHT MODE) ---
+# --- 4. PANEL WEB DARK MODE ---
 @app.get("/check/{ticket_id}", response_class=HTMLResponse)
 def validar_ticket(ticket_id: int, db: Session = Depends(get_db)):
     reserva = db.query(Reserva).filter(Reserva.id == ticket_id).first()
     if not reserva:
-        return """
-        <body style='background:black;color:white;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;flex-direction:column'>
-            <div style='font-size:100px'>❌</div>
-            <h1 style='color:red;font-size:3em;margin:0'>INVALIDO</h1>
-        </body>
-        """
+        return "<body style='background:black;display:flex;justify-content:center;align-items:center;height:100vh'><h1 style='color:red;font-size:4em;font-family:sans-serif'>❌ INVALIDO</h1></body>"
     return f"""
-    <body style='background:black;color:white;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;flex-direction:column'>
+    <body style='background:black;color:white;font-family:sans-serif;display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh'>
         <div style='font-size:100px'>✅</div>
-        <h1 style='color:#0f0;font-size:3em;margin:0'>PERMITIDO</h1>
-        <h2 style='font-size:2em;margin:20px 0'>{reserva.nombre_completo}</h2>
-        <div style='background:#333;padding:10px 30px;border-radius:20px;font-size:1.5em'>{reserva.tipo_entrada}</div>
+        <h1 style='color:#00ff9d;font-size:3em;margin:0'>ACCESO OK</h1>
+        <h2 style='font-size:2.5em;margin:20px 0'>{reserva.nombre_completo}</h2>
+        <div style='background:#333;padding:10px 40px;border-radius:50px;font-size:1.5em;color:#ff00ff;border:2px solid #ff00ff'>{reserva.tipo_entrada}</div>
     </body>
     """
 
@@ -323,30 +323,28 @@ def validar_ticket(ticket_id: int, db: Session = Depends(get_db)):
 def ver_panel(db: Session = Depends(get_db)):
     reservas = db.query(Reserva).order_by(Reserva.id.desc()).all()
     
-    # Cálculos reales de PAX (Suma de cantidades, no de filas)
+    # PAX Reales (Suma)
     total_pax = db.query(func.sum(Reserva.cantidad)).scalar() or 0
     total_vip = db.query(func.sum(Reserva.cantidad)).filter(Reserva.tipo_entrada == 'Mesa VIP').scalar() or 0
     total_gral = db.query(func.sum(Reserva.cantidad)).filter(Reserva.tipo_entrada == 'General').scalar() or 0
     
     filas = ""
     for r in reservas:
-        color_tipo = '#d946ef' if r.tipo_entrada == 'Mesa VIP' else '#22d3ee' # Pink vs Cyan
-        filas += f"""
-        <tr style='border-bottom:1px solid #333'>
+        color = '#ff00ff' if 'VIP' in r.tipo_entrada else '#00ff9d'
+        filas += f"""<tr style='border-bottom:1px solid #222'>
             <td style='padding:15px'>#{r.id}</td>
             <td>{r.fecha_reserva.strftime('%H:%M')}</td>
-            <td style='font-weight:bold'>{r.nombre_completo}</td>
-            <td><span style='color:{color_tipo};border:1px solid {color_tipo};padding:2px 8px;border-radius:5px'>{r.tipo_entrada}</span></td>
-            <td style='text-align:center;font-size:1.2em'>{r.cantidad}</td>
-            <td style='color:#a3a3a3'>{r.rrpp_asignado}</td>
-        </tr>"""
+            <td style='font-weight:bold;font-size:1.1em'>{r.nombre_completo}</td>
+            <td style='color:{color}'>{r.tipo_entrada}</td>
+            <td style='text-align:center;font-weight:bold'>{r.cantidad}</td>
+            <td style='color:#888'>{r.rrpp_asignado}</td></tr>"""
     
     return f"""
     <html>
     <head>
-        <title>MOSCU Night Manager</title>
-        <meta http-equiv="refresh" content="30">
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+        <title>MOSCU Night</title>
+        <meta http-equiv="refresh" content="10">
+        <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap" rel="stylesheet">
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <script>
             function exportCSV() {{
@@ -354,70 +352,40 @@ def ver_panel(db: Session = Depends(get_db)):
                 var rows = document.querySelectorAll("table tr");
                 for (var i = 0; i < rows.length; i++) {{
                     var row = [], cols = rows[i].querySelectorAll("td, th");
-                    for (var j = 0; j < cols.length; j++) {{
-                        var data = cols[j].innerText.replace(/(\\r\\n|\\n|\\r)/gm, "").replace(/"/g, '""');
-                        row.push('"' + data + '"');
-                    }}
+                    for (var j = 0; j < cols.length; j++) 
+                        row.push('"' + cols[j].innerText + '"'); 
                     csv.push(row.join(","));        
                 }}
-                var now = new Date();
-                var dateStr = now.toISOString().slice(0,10);
                 var blob = new Blob(["\\uFEFF" + csv.join("\\n")], {{ type: 'text/csv; charset=utf-8;' }});
                 var link = document.createElement("a");
                 link.href = URL.createObjectURL(blob);
-                link.download = "Moscu_Guestlist_" + dateStr + ".csv";
+                link.download = "Moscu_List_" + new Date().toISOString().slice(0,10) + ".csv";
                 link.click();
             }}
         </script>
         <style>
-            body {{ background-color: #000; color: #fff; font-family: 'Inter', sans-serif; margin: 0; padding: 40px; }}
-            .container {{ max-width: 1200px; margin: 0 auto; }}
-            .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; border-bottom: 2px solid #333; padding-bottom: 20px; }}
-            h1 {{ margin: 0; font-size: 2.5em; letter-spacing: -1px; background: -webkit-linear-gradient(45deg, #d946ef, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
-            .btn-export {{ background: #22c55e; color: black; padding: 12px 24px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; transition: transform 0.2s; }}
-            .btn-export:hover {{ transform: scale(1.05); background: #4ade80; }}
-            
-            .stats-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 40px; }}
-            .card {{ background: #111; border: 1px solid #333; padding: 20px; border-radius: 12px; text-align: center; }}
-            .card h3 {{ margin: 0 0 10px 0; color: #888; font-size: 0.9em; text-transform: uppercase; }}
-            .card .number {{ font-size: 3em; font-weight: bold; margin: 0; }}
-            
-            table {{ width: 100%; border-collapse: collapse; font-size: 0.95em; }}
-            th {{ text-align: left; padding: 15px; color: #888; border-bottom: 2px solid #333; text-transform: uppercase; font-size: 0.8em; }}
-            tr:hover {{ background: #111; }}
+            body {{ background-color: #050505; color: #fff; font-family: 'Montserrat', sans-serif; padding: 40px; }}
+            .card {{ background: #111; padding: 20px; border-radius: 15px; border: 1px solid #333; text-align: center; }}
+            h1 {{ background: -webkit-linear-gradient(#00ff9d, #00b8ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
+            .btn {{ background: #00ff9d; color: black; padding: 10px 20px; border: none; font-weight: bold; cursor: pointer; border-radius: 5px; }}
         </style>
     </head>
     <body>
-        <div class="container">
-            <div class="header">
+        <div style="max-width:1200px;margin:0 auto">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:30px">
                 <h1>🦁 MOSCU NIGHT MANAGER</h1>
-                <button class="btn-export" onclick="exportCSV()">⬇️ EXCEL DOWNLOAD</button>
+                <button class="btn" onclick="exportCSV()">BAJAR EXCEL</button>
             </div>
             
-            <div class="stats-grid">
-                <div class="card">
-                    <h3>Total Pax</h3>
-                    <p class="number" style="color: white">{total_pax}</p>
-                </div>
-                <div class="card" style="border-color: #d946ef33">
-                    <h3>Mesa VIP Pax</h3>
-                    <p class="number" style="color: #d946ef">{total_vip}</p>
-                </div>
-                <div class="card" style="border-color: #22d3ee33">
-                    <h3>General Pax</h3>
-                    <p class="number" style="color: #22d3ee">{total_gral}</p>
-                </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-bottom:40px">
+                <div class="card"><h3>PAX TOTAL</h3><h2 style="font-size:3em;margin:0">{total_pax}</h2></div>
+                <div class="card" style="border-color:#ff00ff"><h3>VIP</h3><h2 style="color:#ff00ff;font-size:3em;margin:0">{total_vip}</h2></div>
+                <div class="card" style="border-color:#00ff9d"><h3>GENERAL</h3><h2 style="color:#00ff9d;font-size:3em;margin:0">{total_gral}</h2></div>
             </div>
 
-            <table>
-                <thead>
-                    <tr>
-                        <th>ID</th><th>Hora</th><th>Nombre Completo</th><th>Acceso</th><th>Pax</th><th>RRPP</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {filas}
-                </tbody>
+            <table style="width:100%;border-collapse:collapse">
+                <tr style="text-align:left;color:#666"><th>ID</th><th>HORA</th><th>NOMBRE</th><th>TIPO</th><th>PAX</th><th>RRPP</th></tr>
+                {filas}
             </table>
         </div>
     </body>
